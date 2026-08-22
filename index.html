@@ -48,9 +48,6 @@ function render(){let list=active==="All"?MENU:MENU.filter(x=>x.category===activ
 function add(name,price){cart[name]??={name,price,qty:0};cart[name].qty++;update()}
 function change(name,d){cart[name].qty+=d;if(cart[name].qty<=0)delete cart[name];update();cartView()}
 function update(){let n=0,t=0;Object.values(cart).forEach(x=>{n+=x.qty;t+=x.qty*x.price});count.textContent=n;total.textContent=t;foodTotal.textContent=t;recalcTotal()}
-function add(name,price){cart[name]??={name,price,qty:0};cart[name].qty++;update()}
-function change(name,d){cart[name].qty+=d;if(cart[name].qty<=0)delete cart[name];update();cartView()}
-function update(){let n=0,t=0;Object.values(cart).forEach(x=>{n+=x.qty;t+=x.qty*x.price});count.textContent=n;total.textContent=t;foodTotal.textContent=t;recalcTotal()}
 function cartView(){let e=Object.values(cart);cartItems.innerHTML=e.length?e.map(x=>`<div class="row"><span>${x.name} × ${x.qty}</span><span>₹${x.qty*x.price} <button onclick="change('${esc(x.name)}',-1)">−</button> <button onclick="change('${esc(x.name)}',1)">+</button></span></div>`).join(""):"<p>Your cart is empty.</p>"}
 function openCart(){cartView();recalcTotal();modal.style.display="block"}function closeCart(){modal.style.display="none"}
 function dist(a,b,c,d){const R=6371,r=x=>x*Math.PI/180,dl=r(c-a),dn=r(d-b),z=Math.sin(dl/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(dn/2)**2;return R*2*Math.atan2(Math.sqrt(z),Math.sqrt(1-z))}
