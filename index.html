@@ -19,10 +19,73 @@ header{background:linear-gradient(135deg,#160d0c,#4b241f);color:white;position:s
 <body>
 <header><div class="nav"><div><div class="logo">Classic</div><div class="cafe">CAFE</div></div><div class="navlinks"><a href="#menu">Menu</a><a href="#about">About</a><a href="tel:+918529625875">📞 Call</a><a class="orderbtn" style="background:#168447;color:white" href="https://wa.me/918529625875?text=Hello%20Classic%20Cafe%2C%20I%20want%20to%20place%20an%20order." target="_blank" rel="noopener">💬 WhatsApp</a><button class="orderbtn" onclick="openCart()">Order Now</button></div></div></header>
 <main>
-<section class="section"><div class="highlights"><div class="highlight"><b>🚴 Home Delivery</b><span>Delivery charge is calculated automatically based on your current location.</span></div><div class="highlight"><b>🛒 Website Ordering</b><span>Select items, check delivery charge and place your order from your phone.</span></div><div class="highlight"><b>📲 WhatsApp Orders</b><span>Order directly on WhatsApp, or place a website order and send the full order to Classic Cafe on WhatsApp.</span></div><div class="highlight"><b>🕛 Home Delivery Timing</b><span>Orders accepted daily from 12:00 PM to 12:00 AM.</span></div></div></section>
-<section class="hero"><div class="heroCard"><div class="heroText"><div><span class="pill">🍔 Premium Fast Food</span><span class="pill">🥤 Special Shakes</span><span class="pill">💵 COD / UPI</span><span class="pill">🕛 12 PM–12 AM</span></div><h1>Good Food.<br>Good Mood.</h1><p>Classic Cafe, Jodhpur — premium fast food, loaded pizzas, burgers, sandwiches, crispy snacks, rich shakes and ice cream. Order online or directly on WhatsApp.</p><button class="orderbtn" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🍽️ Browse Menu</button></div></div></section>
-<section class="section"><div class="highlights"><div class="highlight"><b>🛒 Website Ordering</b><span>Select items, check delivery charge and place your order from your phone.</span></div><div class="highlight"><b>📲 WhatsApp Orders</b><span>Order directly on WhatsApp, or place a website order and send the full order to Classic Cafe on WhatsApp.</span></div><div class="highlight"><b>🕛 Home Delivery Timing</b><span>Orders accepted daily from 12:00 PM to 12:00 AM.</span></div></div></section>
-</main>
+<section class="hero">
+  <div class="heroCard">
+    <div class="heroText">
+      <div>
+        <span class="pill">🍔 Premium Fast Food</span>
+        <span class="pill">🥤 Special Shakes</span>
+        <span class="pill">💵 COD / UPI</span>
+        <span class="pill">🕛 12 PM–12 AM</span>
+      </div>
+
+      <h1>Good Food.<br>Good Mood.</h1>
+
+      <p>
+        Classic Cafe, Jodhpur — premium fast food, loaded pizzas, burgers,
+        sandwiches, crispy snacks, rich shakes and ice cream.
+        Order online or directly on WhatsApp.
+      </p>
+
+      <button class="orderbtn"
+        onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">
+        🍽️ Browse Menu
+      </button>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="highlights">
+    <div class="highlight">
+      <b>🛒 Website Ordering</b>
+      <span>Select items, check delivery charge and place your order from your phone.</span>
+    </div>
+
+    <div class="highlight">
+      <b>📲 WhatsApp Orders</b>
+      <span>Order directly on WhatsApp, or place a website order and send the full order to Classic Cafe on WhatsApp.</span>
+    </div>
+
+    <div class="highlight">
+      <b>🕛 Home Delivery Timing</b>
+      <span>Orders accepted daily from 12:00 PM to 12:00 AM.</span>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="menu">
+  <h2>🍕 Explore Our Full Menu</h2>
+  <p style="color:var(--muted);margin-top:-8px;margin-bottom:14px">
+    Choose a category below — every item and price is listed for easy ordering.
+  </p>
+
+  <div class="menuTabs" id="tabs"></div>
+  <div id="menuList"></div>
+</section>
+
+<section class="section" id="about">
+  <h2>Classic Cafe</h2>
+
+  <div class="gallery">
+    <img src="cafe-location.jpg" alt="Classic Cafe Jodhpur">
+
+    <div>
+      <img src="menu-1.jpg" alt="Classic Cafe menu">
+      <img src="menu-2.jpg" alt="Classic Cafe shakes menu">
+    </div>
+  </div>
+</section></main>
 <footer><div class="foot"><div><div class="logo">Classic</div><div class="cafe">CAFE</div></div><div>📍 Jhanwar Rd, near EPFO Office, opposite House of English & The Pupil School, Bhadu Market, Jodhpur, Rajasthan 342014<br>📞 8107477729 · 8529625875</div></div></footer>
 <button class="cart" onclick="openCart()">🛒 Cart <span id="count">0</span> · ₹<span id="total">0</span></button>
 <div class="modal" id="modal"><div class="panel"><button class="close" onclick="closeCart()">×</button><h2>Place Your Order</h2><div id="cartItems"></div><div class="summary"><div class="row"><span>Food Total</span><b>₹<span id="foodTotal">0</span></b></div><div class="row"><span>Delivery</span><b>₹<span id="deliveryCharge">0</span></b></div><div class="row"><span>Grand Total</span><b>₹<span id="grandTotal">0</span></b></div></div>
