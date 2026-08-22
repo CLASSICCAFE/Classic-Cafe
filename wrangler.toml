@@ -1,0 +1,12 @@
+name = "classic-cafe-jodhpur"
+main = "worker.js"
+compatibility_date = "2026-08-22"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "classic-cafe-orders"
+database_id = "PASTE_YOUR_D1_DATABASE_ID_HERE"
