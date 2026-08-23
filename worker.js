@@ -907,7 +907,118 @@ async function api(request,env,url){
       }
     });
 
+  }/* ===================================================
+   ADMIN MANUAL ASSIGN / REASSIGN ORDER
+=================================================== */
+
+if(
+  url.pathname==="/api/orders/assign" &&
+  request.method==="PUT"
+){
+
+  if(!await authorized(request,env,"admin")){
+    return json(
+      {error:"Unauthorized"},
+      401
+    );
   }
+
+  await ensureDeliveryTables(env);
+
+  let body;
+
+  try{
+    body=await request.json();
+  }catch{
+    return json(
+      {error:"Invalid JSON"},
+      400
+    );
+  }
+
+  const orderId=String(body.order_id||"").trim();
+  const deliveryBoyId=String(body.delivery_boy_id||"").trim();
+
+  if(!orderId || !deliveryBoyId){
+    return json(
+      {
+        error:
+          "Order ID and Delivery Boy ID are required."
+      },
+      400
+    );
+  }
+
+  const order=
+    await env.DB.prepare(`
+      SELECT id,status
+      FROM orders
+      WHERE id=?
+    `)
+    .bind(orderId)
+    .first();
+
+  if(!order){
+    return json(
+      {error:"Order not found"},
+      404
+    );
+  }
+
+  const boy=
+    await env.DB.prepare(`
+      SELECT id,name,active
+      FROM delivery_boys
+      WHERE id=?
+    `)
+    .bind(deliveryBoyId)
+    .first();
+
+  if(!boy){
+    return json(
+      {error:"Delivery Boy not found"},
+      404
+    );
+  }
+
+  if(!boy.active){
+    return json(
+      {
+        error:
+          "This Delivery Boy is inactive."
+      },
+      400
+    );
+  }
+
+  const now=
+    new Date().toISOString();
+
+  await env.DB.prepare(`
+    INSERT INTO delivery_assignments
+    (order_id,delivery_boy_id,assigned_at)
+    VALUES (?,?,?)
+    ON CONFLICT(order_id)
+    DO UPDATE SET
+      delivery_boy_id=excluded.delivery_boy_id,
+      assigned_at=excluded.assigned_at
+  `)
+  .bind(
+    orderId,
+    deliveryBoyId,
+    now
+  )
+  .run();
+
+  return json({
+    ok:true,
+    message:"Order assigned successfully.",
+    order_id:orderId,
+    delivery_boy_id:deliveryBoyId,
+    delivery_boy_name:boy.name,
+    assigned_at:now
+  });
+}
 
 
   /* ===================================================
