@@ -106,6 +106,14 @@ async function ensureCoreTables(env){
     )
   `).run();
 
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_sessions(
+      token TEXT PRIMARY KEY,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
   // These are starter controls. Existing/real menu items can be added from Admin.
   const starters=[
     ["MENU-PIZZA","Pizza","Pizza"],
@@ -187,8 +195,34 @@ async function ensureDeliveryTables(env){
   }
 }
 
+function getCookie(request,name){
+  const raw=request.headers.get("cookie")||"";
+  for(const part of raw.split(";")){
+    const [k,...rest]=part.trim().split("=");
+    if(k===name) return decodeURIComponent(rest.join("=")||"");
+  }
+  return "";
+}
+
+async function adminSessionValid(request,env){
+  try{
+    await ensureCoreTables(env);
+    const s=getCookie(request,"classic_admin_session");
+    if(!s) return false;
+    const row=await env.DB.prepare(`
+      SELECT token FROM admin_sessions
+      WHERE token=? AND expires_at>?
+      LIMIT 1
+    `).bind(s,new Date().toISOString()).first();
+    return !!row;
+  }catch{
+    return false;
+  }
+}
+
 async function authorized(request,env,type){
   if(type==="admin"){
+    if(await adminSessionValid(request,env)) return true;
     const key=request.headers.get("x-admin-key");
     return !!env.ADMIN_KEY && !!key && key===env.ADMIN_KEY;
   }
@@ -310,7 +344,7 @@ async function publicMenu(env){
     SELECT id,name,category,available,updated_at
     FROM menu_items ORDER BY category,name
   `).all();
-  return rows.results.map(x=>({...x,available:Number(x.available)===1}));
+  return rows.results.map(x=>({...x,available:Number(x.available)===1,hidden:false}));
 }
 
 async function checkItemsAvailable(env,items){
@@ -332,19 +366,62 @@ async function checkItemsAvailable(env,items){
 async function api(request,env,url){
   if(request.method==="OPTIONS") return new Response(null,{status:204,headers:corsHeaders()});
 
+  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
+  if(url.pathname==="/api/admin/session" && request.method==="POST"){
+    const key=request.headers.get("x-admin-key");
+    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
+      return json({error:"Invalid Admin Key."},401);
+    }
+    await ensureCoreTables(env);
+    const session=token();
+    const expires=new Date(Date.now()+7*24*60*60*1000).toISOString();
+    await env.DB.prepare(`
+      INSERT INTO admin_sessions(token,expires_at,created_at)
+      VALUES(?,?,?)
+    `).bind(session,expires,new Date().toISOString()).run();
+
+    return new Response(JSON.stringify({
+      ok:true,
+      expires_at:expires
+    }),{
+      status:200,
+      headers:{
+        "content-type":"application/json; charset=utf-8",
+        "cache-control":"no-store",
+        "set-cookie":`classic_admin_session=${encodeURIComponent(session)}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`
+      }
+    });
+  }
+
+  if(url.pathname==="/api/admin/logout" && request.method==="POST"){
+    const s=getCookie(request,"classic_admin_session");
+    if(s){
+      await ensureCoreTables(env);
+      await env.DB.prepare(`DELETE FROM admin_sessions WHERE token=?`).bind(s).run();
+    }
+    return new Response(JSON.stringify({ok:true}),{
+      status:200,
+      headers:{
+        "content-type":"application/json; charset=utf-8",
+        "cache-control":"no-store",
+        "set-cookie":"classic_admin_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax"
+      }
+    });
+  }
+
   // Public menu availability
-  if(url.pathname==="/api/menu" && request.method==="GET"){
+  if((url.pathname==="/api/menu" || url.pathname==="/api/menu-items") && request.method==="GET"){
     return json({ok:true,items:await publicMenu(env)});
   }
 
   // Admin menu list
-  if(url.pathname==="/api/admin/menu" && request.method==="GET"){
+  if((url.pathname==="/api/admin/menu" || url.pathname==="/api/menu-items") && request.method==="GET"){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
     return json({ok:true,items:await publicMenu(env)});
   }
 
   // Admin create/update menu item
-  if(url.pathname==="/api/admin/menu" && request.method==="POST"){
+  if((url.pathname==="/api/admin/menu" || url.pathname==="/api/menu-items") && request.method==="POST"){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
     await ensureCoreTables(env);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
@@ -361,7 +438,7 @@ async function api(request,env,url){
     return json({ok:true,items:await publicMenu(env)});
   }
 
-  const menuPut=url.pathname.match(/^\/api\/admin\/menu\/([^/]+)$/);
+  const menuPut=url.pathname.match(/^\/api\/(?:admin\/menu|menu-items)\/([^/]+)$/);
   if(menuPut && request.method==="PUT"){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
     await ensureCoreTables(env);
@@ -369,7 +446,14 @@ async function api(request,env,url){
     const id=decodeURIComponent(menuPut[1]);
     const row=await env.DB.prepare(`SELECT id FROM menu_items WHERE id=? LIMIT 1`).bind(id).first();
     if(!row) return json({error:"Menu item not found"},404);
-    if(b.available!==undefined){
+    if(b.state!==undefined){
+      if(!["available","soldout","hidden"].includes(String(b.state))){
+        return json({error:"Invalid menu state"},400);
+      }
+      // "hidden" is treated as unavailable for ordering; the dashboard can still show it.
+      await env.DB.prepare(`UPDATE menu_items SET available=?,updated_at=? WHERE id=?`)
+        .bind(String(b.state)==="available"?1:0,new Date().toISOString(),id).run();
+    }else if(b.available!==undefined){
       await env.DB.prepare(`UPDATE menu_items SET available=?,updated_at=? WHERE id=?`)
         .bind(b.available?1:0,new Date().toISOString(),id).run();
     }
