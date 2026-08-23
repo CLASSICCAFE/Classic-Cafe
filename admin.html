@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classic Cafe Admin Dashboard</title>
+<style>
+:root{--brown:#241311;--brown2:#4a2520;--gold:#d9a441;--cream:#fff9f1;--line:#eadfd4;--green:#168447;--red:#b42318;--orange:#b45f06;--blue:#1769aa}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:var(--cream);color:#211616}
+header{background:linear-gradient(135deg,#241311,#4a2520);color:#fff;padding:18px;position:sticky;top:0;z-index:20;box-shadow:0 4px 18px #0003}
+.header{max-width:1200px;margin:auto;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.logo{font-size:20px;font-weight:900}.logo small{display:block;font-size:12px;opacity:.75;font-weight:500}
+main{max-width:1200px;margin:auto;padding:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;margin:14px 0;box-shadow:0 5px 20px #24131108}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+button,input,select{padding:11px 13px;border-radius:10px;font:inherit}
+button{border:0;color:#fff;background:var(--brown);font-weight:700;cursor:pointer}
+button:hover{opacity:.92}
+input,select{border:1px solid #ddd;background:#fff;width:100%}
+.gold{background:var(--gold);color:#21120e}.green{background:var(--green)}.red{background:var(--red)}.orange{background:var(--orange)}.blue{background:var(--blue)}
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px}.stat small{color:#777;font-weight:600}.stat b{display:block;font-size:26px;margin-top:4px}
+.shopControl{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.control{border:1px solid var(--line);border-radius:14px;padding:13px}.controlActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}.controlActions button{min-width:75px}
+.timeGrid{display:grid;grid-template-columns:1fr 1fr auto;gap:10px}
+.menuGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.menuItem{border:1px solid var(--line);border-radius:14px;padding:13px;background:#fffdf9}
+.badge{display:inline-block;padding:6px 10px;border-radius:20px;font-size:12px;font-weight:800}
+.ok{background:#e2f7e9;color:#13733d}.bad{background:#ffe4e4;color:#b42318}.warn{background:#fff0cf;color:#875700}
+.order{border:1px solid var(--line);border-radius:16px;padding:15px;margin:12px 0;background:#fffdf9}.orderHead{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
+.orderId{font-weight:900;font-size:18px}.status{padding:6px 10px;border-radius:20px;font-size:12px;font-weight:800;background:#f3e8dc}
+.items{background:#fff;border:1px solid #eee;border-radius:12px;padding:10px;margin-top:10px;line-height:1.7}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.actions button{font-size:12px;padding:9px 10px}
+.notice{padding:12px;border-radius:12px;background:#fff3d9;margin-bottom:12px}.error{padding:10px;border-radius:10px;background:#ffe4e4;color:#b42318;margin-top:10px}
+.empty{text-align:center;padding:30px;color:#777}
+.small{font-size:12px;color:#777}
+footer{text-align:center;padding:28px;color:#777;font-size:13px}
+@media(max-width:900px){.stats{grid-template-columns:repeat(3,1fr)}.shopControl{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){main{padding:10px}.stats{grid-template-columns:repeat(2,1fr)}.shopControl,.menuGrid,.timeGrid{grid-template-columns:1fr}.stat b{font-size:22px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="header">
+    <div class="logo">☕ Classic Cafe<small>Owner Admin Dashboard · Secure Session</small></div>
+    <div class="controlActions">
+      <button class="gold" onclick="loadAll()">🔄 Refresh</button>
+      <button onclick="logout()">🔒 Logout</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="errorBox"></div>
+
+  <div class="notice">
+    🟢 <b>Admin Panel Active</b> — Admin Key अब हर बार नहीं डालनी पड़ेगी। Secure session 7 दिन तक चलेगा.
+  </div>
+
+  <section class="stats">
+    <div class="stat"><small>📦 Total Orders</small><b id="totalOrders">0</b></div>
+    <div class="stat"><small>🕐 Pending</small><b id="pendingOrders">0</b></div>
+    <div class="stat"><small>👨‍🍳 Preparing</small><b id="preparingOrders">0</b></div>
+    <div class="stat"><small>🚴 Delivery</small><b id="deliveryOrders">0</b></div>
+    <div class="stat"><small>✅ Delivered</small><b id="deliveredOrders">0</b></div>
+    <div class="stat"><small>💰 Sales</small><b id="sales">₹0</b></div>
+  </section>
+
+  <div class="card">
+    <div class="row"><h3>🏪 Shop Control</h3><span id="lastUpdate" class="small">—</span></div>
+    <div class="shopControl">
+      <div class="control"><b>Shop</b><div id="shopState">—</div><div class="controlActions">
+        <button class="green" onclick="saveSettings({shop_open:true})">🟢 Open</button>
+        <button class="red" onclick="saveSettings({shop_open:false})">🔴 Closed</button>
+      </div></div>
+      <div class="control"><b>Online Orders</b><div id="websiteState">—</div><div class="controlActions">
+        <button class="green" onclick="saveSettings({website_orders:true})">🟢 ON</button>
+        <button class="red" onclick="saveSettings({website_orders:false})">🔴 OFF</button>
+      </div></div>
+      <div class="control"><b>Delivery</b><div id="deliveryState">—</div><div class="controlActions">
+        <button class="green" onclick="saveSettings({delivery_enabled:true})">🟢 ON</button>
+        <button class="red" onclick="saveSettings({delivery_enabled:false})">🔴 OFF</button>
+      </div></div>
+      <div class="control"><b>Delivery Radius / Rate</b><div id="deliveryConfig">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>🕐 Online Ordering Time</h3>
+    <div class="timeGrid">
+      <div><label class="small">Opening</label><input id="openingTime" type="time" value="12:00"></div>
+      <div><label class="small">Closing</label><input id="closingTime" type="time" value="00:00"></div>
+      <button class="orange" onclick="saveTiming()">💾 Save Timing</button>
+    </div>
+    <p class="small">Example: 12:00 PM → 12:00 AM. Closing time can cross midnight.</p>
+  </div>
+
+  <div class="card">
+    <div class="row"><h3>🍔 Menu / Item Availability</h3><button class="gold" onclick="loadMenu()">🔄 Refresh</button></div>
+    <div id="menuItems" class="menuGrid"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><h3>🔐 Delivery OTP Approval</h3><button class="gold" onclick="loadOtp()">🔄 Refresh</button></div>
+    <div id="otpList"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><h3>🛵 Delivery Boys</h3><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div>
+    <div id="boysList"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><h3>📦 Orders</h3><button class="gold" onclick="loadOrders()">🔄 Refresh</button></div>
+    <div id="orders"></div>
+  </div>
+</main>
+
+<footer>Classic Cafe © 2026 · Owner Admin Dashboard</footer>
+
+<script>
+let SETTINGS={}, ORDERS=[];
+
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const $=id=>document.getElementById(id);
+
+function showError(msg){
+  $('errorBox').innerHTML=msg?`<div class="error">❌ ${esc(msg)}</div>`:'';
+}
+
+async function api(path,options={}){
+  const r=await fetch(path,{credentials:'same-origin',...options});
+  let d={};
+  try{d=await r.json()}catch{}
+  if(r.status===401){
+    const key=prompt('पहली बार Admin Dashboard खोल रहे हैं। अपना ADMIN_KEY डालें:');
+    if(key){
+      const sr=await fetch('/api/admin/session',{
+        method:'POST',
+        headers:{'x-admin-key':key},
+        credentials:'same-origin'
+      });
+      if(sr.ok){
+        return api(path,options);
+      }
+    }
+  }
+  if(!r.ok) throw new Error(d.error||`Request failed (${r.status})`);
+  return d;
+}
+
+async function loadSettings(){
+  const d=await api('/api/settings'); SETTINGS=d.settings||{};
+  $('shopState').innerHTML=SETTINGS.shop_open?'🟢 OPEN':'🔴 CLOSED';
+  $('websiteState').innerHTML=SETTINGS.website_orders?'🟢 ON':'🔴 OFF';
+  $('deliveryState').innerHTML=SETTINGS.delivery_enabled?'🟢 ON':'🔴 OFF';
+  $('openingTime').value=SETTINGS.opening_time||'12:00';
+  $('closingTime').value=SETTINGS.closing_time||'00:00';
+  $('deliveryConfig').textContent=(SETTINGS.delivery_radius||5)+' KM · ₹'+(SETTINGS.delivery_rate||20)+'/KM';
+}
+
+async function saveSettings(changes){
+  try{
+    await api('/api/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(changes)});
+    await loadSettings();
+  }catch(e){showError(e.message)}
+}
+
+async function saveTiming(){
+  await saveSettings({opening_time:$('openingTime').value,closing_time:$('closingTime').value});
+}
+
+async function loadMenu(){
+  try{
+    const d=await api('/api/admin/menu');
+    $('menuItems').innerHTML=(d.items||[]).map(i=>{
+      const available=Number(i.available)===1;
+      return `<div class="menuItem">
+        <div class="row"><b>${esc(i.name)}</b><span class="badge ${available?'ok':'bad'}">${available?'🟢 AVAILABLE':'🔴 SOLD OUT'}</span></div>
+        <div class="small">${esc(i.category||'')}</div>
+        <div class="controlActions">
+          <button class="green" onclick="setItem('${esc(i.id)}','available')">🟢 Available</button>
+          <button class="red" onclick="setItem('${esc(i.id)}','soldout')">🔴 No Available</button>
+        </div>
+      </div>`;
+    }).join('')||'<div class="empty">No menu items.</div>';
+  }catch(e){showError(e.message)}
+}
+
+async function setItem(id,state){
+  try{
+    await api('/api/admin/menu/'+encodeURIComponent(id),{
+      method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({state})
+    });
+    await loadMenu();
+  }catch(e){showError(e.message)}
+}
+
+async function loadOtp(){
+  try{
+    const d=await api('/api/admin/delivery/otp');
+    $('otpList').innerHTML=(d.requests||[]).map(x=>`
+      <div class="card">
+        <b>${esc(x.name||'Delivery Boy')}</b><br>
+        📱 ${esc(x.mobile)} · Request: ${esc(x.created_at||'')}
+        <div class="controlActions">
+          <button class="green" onclick="approveOtp('${esc(x.id)}')">✅ Approve Login</button>
+        </div>
+      </div>`).join('')||'<div class="empty">No pending OTP requests.</div>';
+  }catch(e){showError(e.message)}
+}
+
+async function approveOtp(id){
+  try{await api('/api/admin/delivery/otp/'+encodeURIComponent(id)+'/approve',{method:'PUT'});await loadOtp();}
+  catch(e){showError(e.message)}
+}
+
+async function loadBoys(){
+  try{
+    const d=await api('/api/delivery/boys');
+    $('boysList').innerHTML=(d.boys||[]).map(b=>`
+      <div class="card">
+        <div class="row">
+          <div>🛵 <b>${esc(b.name)}</b> <span class="small">(${esc(b.id)})</span><br>
+          📱 ${esc(b.mobile||'—')}</div>
+          <span class="badge ${Number(b.active)?'ok':'bad'}">${Number(b.active)?'🟢 ACTIVE':'🔴 INACTIVE'}</span>
+        </div>
+      </div>`).join('')||'<div class="empty">No delivery boys.</div>';
+  }catch(e){showError(e.message)}
+}
+
+function statusButtons(o){
+  return `<div class="actions">
+    <button onclick="setStatus('${esc(o.id)}','ACCEPTED')">👍 Accept</button>
+    <button onclick="setStatus('${esc(o.id)}','PREPARING')">👨‍🍳 Preparing</button>
+    <button class="orange" onclick="setStatus('${esc(o.id)}','OUT_FOR_DELIVERY')">🚴 Out</button>
+    <button class="green" onclick="setStatus('${esc(o.id)}','DELIVERED')">✅ Delivered</button>
+    <button class="red" onclick="setStatus('${esc(o.id)}','CANCELLED')">❌ Cancel</button>
+  </div>`;
+}
+
+async function loadOrders(){
+  try{
+    const d=await api('/api/orders'); ORDERS=d.orders||[];
+    $('orders').innerHTML=ORDERS.map(o=>{
+      const items=(o.items||[]).map(i=>`<div>🍽️ ${esc(i.name)} × <b>${esc(i.qty)}</b></div>`).join('');
+      return `<div class="order">
+        <div class="orderHead"><div class="orderId">${esc(o.id)}</div><span class="status">${esc(o.status)}</span></div>
+        <p>👤 <b>${esc(o.customer_name)}</b><br>📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}<br>🚴 Delivery Boy: <b>${esc(o.delivery_boy_id||'Not Assigned')}</b></p>
+        <div class="items">${items||'No items'}</div>
+        <p>💰 Food ₹${Number(o.food_total||0)} + Delivery ₹${Number(o.delivery_charge||0)} = <b>₹${Number(o.grand_total||0)}</b><br>
+        💳 ${esc(o.payment_status||'UNPAID')}</p>
+        ${statusButtons(o)}
+      </div>`;
+    }).join('')||'<div class="empty">📭 No orders.</div>';
+    updateStats();
+  }catch(e){showError(e.message)}
+}
+
+function updateStats(){
+  $('totalOrders').textContent=ORDERS.length;
+  $('pendingOrders').textContent=ORDERS.filter(x=>['NEW','ACCEPTED'].includes(x.status)).length;
+  $('preparingOrders').textContent=ORDERS.filter(x=>x.status==='PREPARING').length;
+  $('deliveryOrders').textContent=ORDERS.filter(x=>x.status==='OUT_FOR_DELIVERY').length;
+  $('deliveredOrders').textContent=ORDERS.filter(x=>x.status==='DELIVERED').length;
+  $('sales').textContent='₹'+ORDERS.filter(x=>x.status!=='CANCELLED').reduce((a,x)=>a+Number(x.grand_total||0),0);
+}
+
+async function setStatus(id,status){
+  try{
+    await api('/api/orders/'+encodeURIComponent(id),{
+      method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({status})
+    });
+    await loadOrders();
+  }catch(e){showError(e.message)}
+}
+
+async function loadAll(){
+  showError('');
+  try{
+    await loadSettings();
+    await Promise.all([loadMenu(),loadOtp(),loadBoys(),loadOrders()]);
+    $('lastUpdate').textContent=new Date().toLocaleTimeString();
+  }catch(e){showError(e.message)}
+}
+
+async function logout(){
+  try{
+    await fetch('/api/admin/logout',{method:'POST',credentials:'same-origin'});
+  }finally{
+    location.reload();
+  }
+}
+
+loadAll();
+setInterval(loadAll,15000);
+</script>
+</body>
+</html>
