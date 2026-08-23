@@ -248,7 +248,18 @@ button:hover{opacity:.9}
   display:block;
   margin-bottom:8px;
 }
+.controlActions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:8px;
+}
 
+.controlActions button{
+  flex:0 0 auto;
+  padding:10px 14px;
+  white-space:nowrap;
+  }
 .controlState{
   display:block;
   font-weight:800;
@@ -426,24 +437,34 @@ footer{
       </div>
 
       <div class="control">
-        <b>Website Orders</b>
-        <span id="deliveryState" class="controlState">—</span>
+  <b>Website Orders</b>
+  <span id="websiteState">—</span>
 
-<div class="controlActions">
-  <button class="green" onclick="deliveryStatus(true)">🟢 ON</button>
-  <button class="red" onclick="deliveryStatus(false)">🔴 OFF</button>
-</div>
+  <div class="controlActions">
+    <button class="green" onclick="websiteStatus(true)">
+      🟢 ON
+    </button>
+
+    <button class="red" onclick="websiteStatus(false)">
+      🔴 OFF
+    </button>
+  </div>
+      </div>
 
       <div class="control">
-        <b>Delivery</b>
-        <span id="deliveryState">—</span>
-        <button class="green" onclick="deliveryStatus(true)">
-          ON
-        </button>
-        <button class="red" onclick="deliveryStatus(false)">
-          OFF
-        </button>
-      </div>
+  <b>Delivery</b>
+  <span id="deliveryState">—</span>
+
+  <div class="controlActions">
+    <button class="green" onclick="deliveryStatus(true)">
+      🟢 ON
+    </button>
+
+    <button class="red" onclick="deliveryStatus(false)">
+      🔴 OFF
+    </button>
+  </div>
+        </div>
 
       <div class="control">
         <b>Last Update</b>
