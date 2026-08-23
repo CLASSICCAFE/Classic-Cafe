@@ -1,5 +1,875 @@
-<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Classic Cafe Admin</title><style>body{font-family:system-ui;margin:0;background:#fff9f1;color:#211616}header{background:#241311;color:#fff;padding:16px;position:sticky;top:0}main{max-width:1000px;margin:auto;padding:16px}.card{background:#fff;border:1px solid #eadfd4;border-radius:16px;padding:14px;margin:12px 0}.row{display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap}button,input{padding:10px;border-radius:9px;border:1px solid #ddd;font:inherit}button{cursor:pointer;background:#241311;color:#fff}.status{padding:6px 9px;border-radius:12px;background:#f3e8dc}.danger{background:#ffe4e4}.ok{background:#e3f7e9}</style></head><body><header><b>Classic Cafe — Owner Dashboard</b></header><main><div class="card"><label>Owner Admin Key</label><input id="key" type="password" placeholder="ADMIN_KEY"><button onclick="load()">Open Orders</button></div><div id="out">Enter your Admin Key and open orders.</div></main><script>
-let K='';const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-async function load(){K=document.getElementById('key').value;const r=await fetch('/api/orders',{headers:{'x-admin-key':K}});const d=await r.json();if(!r.ok)return out.innerHTML='<div class="card">❌ '+esc(d.error)+'</div>';out.innerHTML=d.orders.map(o=>`<div class="card"><div class="row"><b>${esc(o.id)}</b><span class="status">${esc(o.status)}</span></div><p><b>${esc(o.customer_name)}</b> · ${esc(o.mobile)}<br>${esc(o.address)}</p><p>${o.items.map(i=>esc(i.name)+' × '+i.qty).join('<br>')}</p><div>Food ₹${o.food_total} + Delivery ₹${o.delivery_charge} = <b>₹${o.grand_total}</b></div><p>Payment: ${esc(o.payment_status)} · ${new Date(o.created_at).toLocaleString()}</p><div class="row">${['NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY','DELIVERED','CANCELLED'].map(s=>`<button onclick="setStatus('${o.id}','${s}')">${s}</button>`).join('')}</div></div>`).join('')||'<div class="card">No orders.</div>';}
-async function setStatus(id,status){await fetch('/api/orders/'+id,{method:'PUT',headers:{'content-type':'application/json','x-admin-key':K},body:JSON.stringify({status})});load();}setInterval(()=>{if(K)load()},15000);
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classic Cafe Admin Dashboard</title>
+
+<style>
+:root{
+  --brown:#241311;
+  --brown2:#4a2520;
+  --gold:#d9a441;
+  --cream:#fff9f1;
+  --line:#eadfd4;
+  --green:#168447;
+  --red:#b42318;
+  --orange:#b45f06;
+}
+
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  font-family:system-ui,-apple-system,Segoe UI,sans-serif;
+  background:var(--cream);
+  color:#211616;
+}
+
+header{
+  background:linear-gradient(135deg,#241311,#4a2520);
+  color:white;
+  padding:18px;
+  position:sticky;
+  top:0;
+  z-index:20;
+  box-shadow:0 4px 18px #0003;
+}
+
+.header{
+  max-width:1200px;
+  margin:auto;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+}
+
+.logo{
+  font-size:20px;
+  font-weight:900;
+}
+
+.logo small{
+  display:block;
+  font-size:12px;
+  opacity:.7;
+  font-weight:500;
+}
+
+main{
+  max-width:1200px;
+  margin:auto;
+  padding:18px;
+}
+
+.card{
+  background:white;
+  border:1px solid var(--line);
+  border-radius:18px;
+  padding:16px;
+  margin:14px 0;
+  box-shadow:0 5px 20px #24131108;
+}
+
+.login{
+  max-width:500px;
+  margin:60px auto;
+}
+
+input,select,button{
+  padding:11px 13px;
+  border-radius:10px;
+  border:1px solid #ddd;
+  font:inherit;
+}
+
+input,select{
+  background:white;
+  width:100%;
+}
+
+button{
+  cursor:pointer;
+  background:var(--brown);
+  color:white;
+  border:0;
+  font-weight:700;
+}
+
+button:hover{opacity:.9}
+
+.gold{background:var(--gold);color:#21120e}
+.green{background:var(--green)}
+.red{background:var(--red)}
+.orange{background:var(--orange)}
+
+.row{
+  display:flex;
+  gap:10px;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+}
+
+.stats{
+  display:grid;
+  grid-template-columns:repeat(6,1fr);
+  gap:12px;
+}
+
+.stat{
+  background:white;
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:15px;
+}
+
+.stat small{
+  color:#777;
+  font-weight:600;
+}
+
+.stat b{
+  display:block;
+  font-size:27px;
+  margin-top:5px;
+}
+
+.stat.total b{color:var(--brown)}
+.stat.pending b{color:var(--orange)}
+.stat.preparing b{color:#8a5a00}
+.stat.delivery b{color:#1769aa}
+.stat.done b{color:var(--green)}
+.stat.sales b{color:#8b5a00}
+
+.toolbar{
+  display:grid;
+  grid-template-columns:2fr 1fr 1fr auto;
+  gap:10px;
+}
+
+.order{
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:15px;
+  margin:12px 0;
+  background:#fffdf9;
+}
+
+.orderHead{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+
+.orderId{
+  font-weight:900;
+  font-size:18px;
+}
+
+.status{
+  padding:6px 10px;
+  border-radius:20px;
+  font-size:12px;
+  font-weight:800;
+  background:#f3e8dc;
+}
+
+.status.NEW{background:#fff0cf;color:#875700}
+.status.ACCEPTED{background:#e4f0ff;color:#1769aa}
+.status.PREPARING{background:#fff2c2;color:#765500}
+.status.OUT_FOR_DELIVERY{background:#e2efff;color:#1769aa}
+.status.DELIVERED{background:#e2f7e9;color:#13733d}
+.status.CANCELLED{background:#ffe4e4;color:#b42318}
+
+.customer{
+  margin:12px 0;
+  line-height:1.6;
+}
+
+.items{
+  background:#fff;
+  border:1px solid #eee;
+  border-radius:12px;
+  padding:10px;
+}
+
+.totalBox{
+  margin-top:12px;
+  background:#fff5e8;
+  border-radius:12px;
+  padding:12px;
+}
+
+.actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  margin-top:12px;
+}
+
+.actions button{
+  font-size:12px;
+  padding:9px 10px;
+}
+
+.empty{
+  text-align:center;
+  padding:35px;
+  color:#777;
+}
+
+.hidden{display:none}
+
+.notice{
+  padding:12px;
+  border-radius:12px;
+  background:#fff3d9;
+  margin-bottom:12px;
+}
+
+.shopControl{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:10px;
+}
+
+.control{
+  border:1px solid var(--line);
+  padding:13px;
+  border-radius:14px;
+}
+
+.control b{
+  display:block;
+  margin-bottom:8px;
+}
+
+footer{
+  text-align:center;
+  padding:30px;
+  color:#777;
+  font-size:13px;
+}
+
+@media(max-width:900px){
+  .stats{
+    grid-template-columns:repeat(3,1fr);
+  }
+
+  .shopControl{
+    grid-template-columns:repeat(2,1fr);
+  }
+}
+
+@media(max-width:600px){
+  main{padding:12px}
+
+  .stats{
+    grid-template-columns:repeat(2,1fr);
+  }
+
+  .stat b{
+    font-size:23px;
+  }
+
+  .toolbar{
+    grid-template-columns:1fr;
+  }
+
+  .shopControl{
+    grid-template-columns:1fr;
+  }
+
+  .order{
+    padding:12px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="header">
+    <div class="logo">
+      ☕ Classic Cafe
+      <small>Owner Admin Dashboard</small>
+    </div>
+
+    <button class="gold" onclick="load()">🔄 Refresh</button>
+  </div>
+</header>
+
+<main>
+
+<!-- LOGIN -->
+<div id="loginBox" class="card login">
+
+  <h2>🔐 Admin Login</h2>
+
+  <p>
+    Enter your Admin Key to manage Classic Cafe orders.
+  </p>
+
+  <input
+    id="key"
+    type="password"
+    placeholder="Enter ADMIN_KEY"
+  >
+
+  <br><br>
+
+  <button class="green" style="width:100%" onclick="load()">
+    🔓 Open Dashboard
+  </button>
+
+  <div id="loginError"></div>
+
+</div>
+
+
+<!-- DASHBOARD -->
+<div id="dashboard" class="hidden">
+
+  <div class="notice">
+    🟢 <b>Admin Panel Active</b> —
+    Orders automatically refresh every 15 seconds.
+  </div>
+
+
+  <!-- STATS -->
+  <section class="stats">
+
+    <div class="stat total">
+      <small>📦 Total Orders</small>
+      <b id="totalOrders">0</b>
+    </div>
+
+    <div class="stat pending">
+      <small>🕐 Pending</small>
+      <b id="pendingOrders">0</b>
+    </div>
+
+    <div class="stat preparing">
+      <small>👨‍🍳 Preparing</small>
+      <b id="preparingOrders">0</b>
+    </div>
+
+    <div class="stat delivery">
+      <small>🚴 Delivery</small>
+      <b id="deliveryOrders">0</b>
+    </div>
+
+    <div class="stat done">
+      <small>✅ Delivered</small>
+      <b id="deliveredOrders">0</b>
+    </div>
+
+    <div class="stat sales">
+      <small>💰 Sales</small>
+      <b id="sales">₹0</b>
+    </div>
+
+  </section>
+
+
+  <!-- SHOP CONTROL -->
+  <div class="card">
+
+    <h3>🏪 Shop & Ordering Control</h3>
+
+    <div class="shopControl">
+
+      <div class="control">
+        <b>Shop Status</b>
+        <button class="green" onclick="shopStatus('OPEN')">
+          🟢 Open
+        </button>
+        <button class="red" onclick="shopStatus('CLOSED')">
+          🔴 Closed
+        </button>
+      </div>
+
+      <div class="control">
+        <b>Website Orders</b>
+        <button class="green" onclick="websiteStatus(true)">
+          ON
+        </button>
+        <button class="red" onclick="websiteStatus(false)">
+          OFF
+        </button>
+      </div>
+
+      <div class="control">
+        <b>Delivery</b>
+        <button class="green" onclick="deliveryStatus(true)">
+          ON
+        </button>
+        <button class="red" onclick="deliveryStatus(false)">
+          OFF
+        </button>
+      </div>
+
+      <div class="control">
+        <b>Last Update</b>
+        <span id="lastUpdate">—</span>
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- FILTER -->
+  <div class="card">
+
+    <div class="row">
+      <h3>📦 Order Management</h3>
+
+      <button onclick="clearFilters()">
+        Clear Filters
+      </button>
+    </div>
+
+    <div class="toolbar">
+
+      <input
+        id="search"
+        placeholder="🔍 Search order, name, mobile..."
+        oninput="filterOrders()"
+      >
+
+      <select id="statusFilter" onchange="filterOrders()">
+        <option value="">All Status</option>
+        <option>NEW</option>
+        <option>ACCEPTED</option>
+        <option>PREPARING</option>
+        <option>OUT_FOR_DELIVERY</option>
+        <option>DELIVERED</option>
+        <option>CANCELLED</option>
+      </select>
+
+      <select id="paymentFilter" onchange="filterOrders()">
+        <option value="">All Payment</option>
+        <option>COD</option>
+        <option>UPI</option>
+        <option>PAID</option>
+        <option>PENDING</option>
+      </select>
+
+      <button class="gold" onclick="load()">
+        🔄 Refresh
+      </button>
+
+    </div>
+
+  </div>
+
+
+  <!-- ORDERS -->
+  <div id="orders"></div>
+
+</div>
+
+</main>
+
+
+<footer>
+  Classic Cafe © 2026 · Owner Dashboard
+</footer>
+
+
+<script>
+
+let K='';
+let ALL=[];
+
+const out=document.getElementById('orders');
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"]/g,c=>({
+    '&':'&amp;',
+    '<':'&lt;',
+    '>':'&gt;',
+    '"':'&quot;'
+  }[c]));
+}
+
+
+/* LOAD ORDERS */
+
+async function load(){
+
+  K=document.getElementById('key').value.trim();
+
+  if(!K){
+    document.getElementById('loginError').innerHTML=
+      '<p style="color:#b42318">❌ Please enter Admin Key.</p>';
+    return;
+  }
+
+  try{
+
+    const r=await fetch('/api/orders',{
+      headers:{
+        'x-admin-key':K
+      }
+    });
+
+    const d=await r.json();
+
+    if(!r.ok){
+
+      document.getElementById('loginError').innerHTML=
+        '<p style="color:#b42318">❌ '+esc(d.error||'Invalid Admin Key')+'</p>';
+
+      return;
+    }
+
+    document.getElementById('loginBox').classList.add('hidden');
+    document.getElementById('dashboard').classList.remove('hidden');
+
+    ALL=d.orders||[];
+
+    updateStats();
+    filterOrders();
+
+    document.getElementById('lastUpdate').textContent=
+      new Date().toLocaleTimeString();
+
+  }catch(e){
+
+    document.getElementById('loginError').innerHTML=
+      '<p style="color:#b42318">❌ Server connection failed.</p>';
+
+  }
+
+}
+
+
+/* STATISTICS */
+
+function updateStats(){
+
+  const total=ALL.length;
+
+  const pending=ALL.filter(o=>
+    ['NEW','ACCEPTED'].includes(o.status)
+  ).length;
+
+  const preparing=ALL.filter(o=>
+    o.status==='PREPARING'
+  ).length;
+
+  const delivery=ALL.filter(o=>
+    o.status==='OUT_FOR_DELIVERY'
+  ).length;
+
+  const delivered=ALL.filter(o=>
+    o.status==='DELIVERED'
+  ).length;
+
+  const sales=ALL
+    .filter(o=>o.status!=='CANCELLED')
+    .reduce((sum,o)=>sum+Number(o.grand_total||0),0);
+
+  document.getElementById('totalOrders').textContent=total;
+  document.getElementById('pendingOrders').textContent=pending;
+  document.getElementById('preparingOrders').textContent=preparing;
+  document.getElementById('deliveryOrders').textContent=delivery;
+  document.getElementById('deliveredOrders').textContent=delivered;
+  document.getElementById('sales').textContent='₹'+sales;
+
+}
+
+
+/* FILTER */
+
+function filterOrders(){
+
+  const q=
+    document.getElementById('search')?.value
+    .toLowerCase()||'';
+
+  const status=
+    document.getElementById('statusFilter')?.value||'';
+
+  const payment=
+    document.getElementById('paymentFilter')?.value||'';
+
+  let list=ALL.filter(o=>{
+
+    const text=[
+      o.id,
+      o.customer_name,
+      o.mobile,
+      o.address
+    ].join(' ').toLowerCase();
+
+    const searchOK=!q||text.includes(q);
+
+    const statusOK=!status||o.status===status;
+
+    const pay=String(o.payment_status||'').toUpperCase();
+
+    const paymentOK=!payment||
+      pay.includes(payment);
+
+    return searchOK&&statusOK&&paymentOK;
+
+  });
+
+  renderOrders(list);
+
+}
+
+
+/* RENDER */
+
+function renderOrders(list){
+
+  if(!list.length){
+
+    out.innerHTML=
+      '<div class="card empty">📭 No orders found.</div>';
+
+    return;
+  }
+
+  out.innerHTML=list.map(o=>{
+
+    const items=(o.items||[]).map(i=>
+      `<div>
+        🍽️ ${esc(i.name)}
+        × <b>${esc(i.qty)}</b>
+      </div>`
+    ).join('');
+
+    return `
+
+    <div class="order">
+
+      <div class="orderHead">
+
+        <div class="orderId">
+          ${esc(o.id)}
+        </div>
+
+        <span class="status ${esc(o.status)}">
+          ${esc(o.status)}
+        </span>
+
+      </div>
+
+
+      <div class="customer">
+
+        👤 <b>${esc(o.customer_name)}</b><br>
+
+        📱 ${esc(o.mobile)}<br>
+
+        📍 ${esc(o.address)}
+
+      </div>
+
+
+      <div class="items">
+
+        ${items||'No items'}
+
+      </div>
+
+
+      <div class="totalBox">
+
+        Food ₹${Number(o.food_total||0)}
+
+        + Delivery ₹${Number(o.delivery_charge||0)}
+
+        = <b>₹${Number(o.grand_total||0)}</b>
+
+        <br>
+
+        💳 Payment:
+        <b>${esc(o.payment_status||'—')}</b>
+
+        <br>
+
+        🕐 ${
+          o.created_at
+          ? new Date(o.created_at).toLocaleString()
+          : '—'
+        }
+
+      </div>
+
+
+      <div class="actions">
+
+        ${statusButton(o,'NEW','🆕 New')}
+
+        ${statusButton(o,'ACCEPTED','👍 Accept')}
+
+        ${statusButton(o,'PREPARING','👨‍🍳 Preparing')}
+
+        ${statusButton(o,'OUT_FOR_DELIVERY','🚴 Out for Delivery')}
+
+        ${statusButton(o,'DELIVERED','✅ Delivered')}
+
+        ${statusButton(o,'CANCELLED','❌ Cancel')}
+
+      </div>
+
+    </div>
+
+    `;
+
+  }).join('');
+
+}
+
+
+/* STATUS BUTTON */
+
+function statusButton(o,status,text){
+
+  let cls='';
+
+  if(status==='DELIVERED')cls='green';
+  if(status==='CANCELLED')cls='red';
+  if(status==='OUT_FOR_DELIVERY')cls='orange';
+
+  return `
+    <button class="${cls}"
+      onclick="setStatus('${esc(o.id)}','${status}')">
+      ${text}
+    </button>
+  `;
+
+}
+
+
+/* CHANGE STATUS */
+
+async function setStatus(id,status){
+
+  if(!K)return;
+
+  try{
+
+    const r=await fetch('/api/orders/'+encodeURIComponent(id),{
+
+      method:'PUT',
+
+      headers:{
+        'content-type':'application/json',
+        'x-admin-key':K
+      },
+
+      body:JSON.stringify({
+        status:status
+      })
+
+    });
+
+    if(!r.ok){
+
+      const d=await r.json();
+
+      alert('❌ '+(d.error||'Status update failed'));
+
+      return;
+    }
+
+    await load();
+
+  }catch(e){
+
+    alert('❌ Could not update order.');
+
+  }
+
+}
+
+
+/* FILTER CLEAR */
+
+function clearFilters(){
+
+  document.getElementById('search').value='';
+  document.getElementById('statusFilter').value='';
+  document.getElementById('paymentFilter').value='';
+
+  filterOrders();
+
+}
+
+
+/*
+  SHOP CONTROLS
+
+  फिलहाल ये browser-local controls हैं.
+  इन्हें बाद में worker.js + D1 settings API
+  से permanently connect करेंगे.
+*/
+
+function shopStatus(status){
+
+  localStorage.setItem('classicCafeShop',status);
+
+  alert(
+    status==='OPEN'
+    ? '🟢 Shop marked OPEN'
+    : '🔴 Shop marked CLOSED'
+  );
+
+}
+
+function websiteStatus(on){
+
+  localStorage.setItem(
+    'classicCafeWebsite',
+    on?'ON':'OFF'
+  );
+
+  alert(
+    on
+    ? '🟢 Website ordering ON'
+    : '🔴 Website ordering OFF'
+  );
+
+}
+
+function deliveryStatus(on){
+
+  localStorage.setItem(
+    'classicCafeDelivery',
+    on?'ON':'OFF'
+  );
+
+  alert(
+    on
+    ? '🟢 Delivery ON'
+    : '🔴 Delivery OFF'
+  );
+
+}
+
+
+/* AUTO REFRESH */
+
+setInterval(()=>{
+
+  if(K){
+    load();
+  }
+
+},15000);
+
+</script>
+
+</body>
+</html>
