@@ -1824,7 +1824,158 @@ if(
     });
 
   }
+/* ===================================================
+   ADMIN MANUAL DELIVERY BOY ASSIGNMENT
+=================================================== */
 
+const assignMatch =
+  url.pathname.match(
+    /^\/api\/orders\/([^/]+)\/assign$/
+  );
+
+if(
+  assignMatch &&
+  request.method==="PUT"
+){
+
+  if(!await authorized(request,env,"admin")){
+
+    return json(
+      {error:"Unauthorized"},
+      401
+    );
+
+  }
+
+  await ensureDeliveryTables(env);
+
+  const orderId=assignMatch[1];
+
+  let body;
+
+  try{
+
+    body=await request.json();
+
+  }catch{
+
+    return json(
+      {error:"Invalid JSON"},
+      400
+    );
+
+  }
+
+  const deliveryBoyId=
+    String(body.delivery_boy_id||"").trim();
+
+
+  if(!deliveryBoyId){
+
+    return json(
+      {error:"Delivery Boy ID is required."},
+      400
+    );
+
+  }
+
+
+  /* CHECK ORDER */
+
+  const order =
+    await env.DB.prepare(`
+      SELECT id,status
+      FROM orders
+      WHERE id=?
+      LIMIT 1
+    `)
+    .bind(orderId)
+    .first();
+
+
+  if(!order){
+
+    return json(
+      {error:"Order not found."},
+      404
+    );
+
+  }
+
+
+  /* CHECK DELIVERY BOY */
+
+  const boy =
+    await env.DB.prepare(`
+      SELECT
+        id,
+        name,
+        mobile,
+        active
+      FROM delivery_boys
+      WHERE id=?
+      LIMIT 1
+    `)
+    .bind(deliveryBoyId)
+    .first();
+
+
+  if(!boy){
+
+    return json(
+      {error:"Delivery Boy not found."},
+      404
+    );
+
+  }
+
+
+  if(!Number(boy.active)){
+
+    return json(
+      {error:"This Delivery Boy is disabled."},
+      400
+    );
+
+  }
+
+
+  /* ASSIGN / REASSIGN */
+
+  await env.DB.prepare(`
+    INSERT INTO delivery_assignments
+    (order_id,delivery_boy_id,assigned_at)
+    VALUES (?,?,?)
+    ON CONFLICT(order_id)
+    DO UPDATE SET
+      delivery_boy_id=excluded.delivery_boy_id,
+      assigned_at=excluded.assigned_at
+  `)
+  .bind(
+    orderId,
+    deliveryBoyId,
+    new Date().toISOString()
+  )
+  .run();
+
+
+  return json({
+
+    ok:true,
+
+    message:"Delivery Boy assigned successfully.",
+
+    order_id:orderId,
+
+    delivery_boy:{
+      id:boy.id,
+      name:boy.name,
+      mobile:boy.mobile
+    }
+
+  });
+
+        }
 
   /* ===================================================
      UPDATE ORDER STATUS
