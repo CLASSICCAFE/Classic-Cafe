@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Classic Cafe Admin Dashboard</title>
 
@@ -240,12 +241,31 @@ button:hover{opacity:.9}
   border:1px solid var(--line);
   padding:13px;
   border-radius:14px;
+  min-width:0;
 }
 
 .control b{
   display:block;
   margin-bottom:8px;
 }
+
+.controlState{
+  display:block;
+  font-weight:800;
+  margin-bottom:10px;
+  min-height:20px;
+}
+
+.controlActions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+
+.controlActions button{
+  min-width:78px;
+  }
 
 footer{
   text-align:center;
@@ -278,7 +298,19 @@ footer{
   .toolbar{
     grid-template-columns:1fr;
   }
+.shopControl{
+  grid-template-columns:1fr;
+  }
+  .controlActions{
+  width:100%;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
 
+.controlActions button{
+  min-width:78px;
+}
   .shopControl{
     grid-template-columns:1fr;
   }
@@ -385,25 +417,22 @@ footer{
 
       <div class="control">
         <b>Shop Status</b>
-        <span id="shopState">—</span>
-        <button class="green" onclick="shopStatus('OPEN')">
-          🟢 Open
-        </button>
-        <button class="red" onclick="shopStatus('CLOSED')">
-          🔴 Closed
-        </button>
+        <span id="shopState" class="controlState">—</span>
+
+<div class="controlActions">
+  <button class="green" onclick="shopStatus('OPEN')">🟢 Open</button>
+  <button class="red" onclick="shopStatus('CLOSED')">🔴 Closed</button>
+</div>
       </div>
 
       <div class="control">
         <b>Website Orders</b>
-        <span id="websiteState">—</span>
-        <button class="green" onclick="websiteStatus(true)">
-          ON
-        </button>
-        <button class="red" onclick="websiteStatus(false)">
-          OFF
-        </button>
-      </div>
+        <span id="deliveryState" class="controlState">—</span>
+
+<div class="controlActions">
+  <button class="green" onclick="deliveryStatus(true)">🟢 ON</button>
+  <button class="red" onclick="deliveryStatus(false)">🔴 OFF</button>
+</div>
 
       <div class="control">
         <b>Delivery</b>
