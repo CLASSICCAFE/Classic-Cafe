@@ -15,7 +15,66 @@ function withCors(resp){const h=new Headers(resp.headers);Object.entries(corsHea
 function authorized(request, env, type){const key=type==='admin'?request.headers.get('x-admin-key'):request.headers.get('x-delivery-key');const expected=type==='admin'?env.ADMIN_KEY:env.DELIVERY_KEY;return !!expected && key===expected;}
 function token(){return crypto.randomUUID().replaceAll('-','');}
 
-async function api(request, env, url) {
+async function api(request, env, url) {  // ADMIN SETTINGS API
+  if(url.pathname==='/api/settings' && request.method==='GET'){
+    if(!authorized(request,env,'admin')){
+      return json({error:'Unauthorized'},401);
+    }
+
+    const rows=await env.DB.prepare(
+      `SELECT key,value FROM settings ORDER BY key`
+    ).all();
+
+    const settings={};
+    for(const r of rows.results){
+      settings[r.key]=r.value;
+    }
+
+    return json({ok:true,settings});
+  }
+
+  if(url.pathname==='/api/settings' && request.method==='PUT'){
+    if(!authorized(request,env,'admin')){
+      return json({error:'Unauthorized'},401);
+    }
+
+    let body;
+    try{
+      body=await request.json();
+    }catch{
+      return json({error:'Invalid JSON'},400);
+    }
+
+    const allowed=[
+      'shop_open',
+      'website_orders',
+      'delivery_enabled',
+      'opening_time',
+      'closing_time',
+      'delivery_radius',
+      'delivery_rate'
+    ];
+
+    const now=new Date().toISOString();
+
+    for(const key of allowed){
+      if(body[key]===undefined) continue;
+
+      await env.DB.prepare(
+        `INSERT INTO settings (key,value,updated_at)
+         VALUES (?,?,?)
+         ON CONFLICT(key) DO UPDATE SET
+         value=excluded.value,
+         updated_at=excluded.updated_at`
+      ).bind(
+        key,
+        String(body[key]),
+        now
+      ).run();
+    }
+
+    return json({ok:true});
+  }
   if(request.method==='OPTIONS') return new Response(null,{status:204,headers:corsHeaders()});
   if(url.pathname==='/api/health') return json({ok:true,service:'Classic Cafe Orders'});
   if(url.pathname==='/api/orders' && request.method==='POST') {
