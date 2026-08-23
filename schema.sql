@@ -29,3 +29,18 @@ CREATE TABLE IF NOT EXISTS order_tracking (
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
 CREATE INDEX IF NOT EXISTS idx_tracking_token ON order_tracking(tracking_token);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO settings (key,value,updated_at)
+VALUES
+('shop_open','true',datetime('now')),
+('website_orders','true',datetime('now')),
+('delivery_enabled','true',datetime('now')),
+('opening_time','12:00',datetime('now')),
+('closing_time','00:00',datetime('now')),
+('delivery_radius','5',datetime('now')),
+('delivery_rate','20',datetime('now'));
