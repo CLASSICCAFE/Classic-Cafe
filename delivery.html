@@ -1,6 +1,778 @@
-<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Classic Cafe Delivery</title><style>body{font-family:system-ui;margin:0;background:#f7f5f2;color:#211616}header{background:#241311;color:#fff;padding:16px;position:sticky;top:0}main{max-width:900px;margin:auto;padding:16px}.card{background:#fff;border:1px solid #ddd;border-radius:16px;padding:14px;margin:12px 0;box-shadow:0 2px 10px #0001}.row{display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap}button,input{padding:11px;border-radius:9px;border:1px solid #ddd;font:inherit}button{background:#241311;color:#fff}.big{font-size:18px;font-weight:800}.status{font-weight:800}.live{background:#e4f8eb;color:#146b39;padding:8px;border-radius:10px;font-weight:700}.small{font-size:13px;color:#665}</style></head><body><header><b>Classic Cafe — Delivery Boy</b></header><main><div class="card"><input id="key" type="password" placeholder="DELIVERY_KEY"><button onclick="load()">Open My Orders</button></div><div id="out">Enter your delivery key.</div></main><script>
-let K='';let watches={};const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-async function load(){K=document.getElementById('key').value;const r=await fetch('/api/orders',{headers:{'x-delivery-key':K}});const d=await r.json();if(!r.ok){out.innerHTML='<div class="card">❌ Delivery key invalid.</div>';return}out.innerHTML=d.orders.filter(o=>!['DELIVERED','CANCELLED'].includes(o.status)).map(o=>`<div class="card"><div class="row"><span class="big">${esc(o.id)}</span><span class="status">${esc(o.status)}</span></div><p><b>${esc(o.customer_name)}</b> · <a href="tel:${esc(o.mobile)}">${esc(o.mobile)}</a><br>${esc(o.address)}</p><p>${o.items.map(i=>esc(i.name)+' × '+i.qty).join('<br>')}</p><p>Total ₹${o.grand_total} · ${o.distance_km} KM</p><div class="row"><button onclick="setStatus('${o.id}','OUT_FOR_DELIVERY')">🚴 Out for Delivery</button><button onclick="startShare('${o.id}')">📍 ${watches[o.id]?'Sharing…':'Share Live Location'}</button><button onclick="setStatus('${o.id}','DELIVERED')">✅ Delivered</button></div><div id="live-${o.id}">${watches[o.id]?'<p class="live">🟢 Live location sharing is ON</p>':''}</div></div>`).join('')||'<div class="card">No active orders.</div>';}
-async function startShare(id){if(!navigator.geolocation){alert('Location is not supported on this phone.');return}if(watches[id])return;if(!K)return;const opts={enableHighAccuracy:true,maximumAge:5000,timeout:15000};const send=async p=>{try{const r=await fetch('/api/orders/'+id+'/location',{method:'PUT',headers:{'content-type':'application/json','x-delivery-key':K},body:JSON.stringify({lat:p.coords.latitude,lng:p.coords.longitude})});if(!r.ok)throw Error('update failed')}catch(e){console.log(e)}};navigator.geolocation.getCurrentPosition(send,e=>alert('Location permission is required.'),opts);watches[id]=navigator.geolocation.watchPosition(send,e=>console.log(e),opts);load();}
-async function setStatus(id,status){await fetch('/api/orders/'+id,{method:'PUT',headers:{'content-type':'application/json','x-delivery-key':K},body:JSON.stringify({status})});if(status==='DELIVERED'&&watches[id]){navigator.geolocation.clearWatch(watches[id]);delete watches[id]}load();}setInterval(()=>{if(K)load()},15000);
-</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Classic Cafe - Delivery Boy</title>
+
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:Arial,sans-serif;
+  background:#120b08;
+  color:#fff;
+}
+header{
+  background:#1d100c;
+  padding:18px 16px;
+  position:sticky;
+  top:0;
+  z-index:10;
+  border-bottom:1px solid #3c241a;
+}
+.logo{
+  font-family:Georgia,serif;
+  font-size:27px;
+  color:#f3cf8e;
+  font-weight:bold;
+}
+.sub{color:#cdb9aa;font-size:13px;margin-top:3px}
+
+.container{
+  max-width:900px;
+  margin:auto;
+  padding:16px;
+}
+
+.login{
+  max-width:430px;
+  margin:50px auto;
+  background:#21130e;
+  border:1px solid #493022;
+  border-radius:22px;
+  padding:25px;
+  box-shadow:0 15px 40px #0008;
+}
+.login h2{margin-top:0;color:#f3cf8e}
+input{
+  width:100%;
+  padding:14px;
+  border-radius:12px;
+  border:1px solid #594033;
+  background:#120b08;
+  color:white;
+  margin:8px 0 14px;
+  font-size:16px;
+}
+button{
+  border:0;
+  border-radius:12px;
+  padding:12px 16px;
+  font-weight:bold;
+  cursor:pointer;
+}
+.primary{
+  width:100%;
+  background:#e6b85c;
+  color:#21130e;
+}
+.green{background:#168447;color:white}
+.red{background:#b42318;color:white}
+.dark{background:#352019;color:white}
+
+.top{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  margin-bottom:18px;
+}
+.online{
+  background:#123b25;
+  color:#70e39c;
+  padding:7px 11px;
+  border-radius:20px;
+  font-size:12px;
+  font-weight:bold;
+}
+
+.stats{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:10px;
+  margin-bottom:20px;
+}
+.stat{
+  background:#21130e;
+  border:1px solid #493022;
+  border-radius:17px;
+  padding:16px 10px;
+  text-align:center;
+}
+.stat b{
+  display:block;
+  font-size:25px;
+  color:#f3cf8e;
+}
+.stat span{
+  color:#bda99b;
+  font-size:12px;
+}
+
+.section-title{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin:20px 0 12px;
+}
+.section-title h2{
+  font-size:19px;
+  margin:0;
+  color:#f3cf8e;
+}
+
+.order{
+  background:#21130e;
+  border:1px solid #493022;
+  border-radius:20px;
+  padding:17px;
+  margin-bottom:14px;
+}
+.order-head{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+}
+.order-id{
+  color:#f3cf8e;
+  font-weight:bold;
+}
+.status{
+  padding:6px 10px;
+  border-radius:20px;
+  font-size:11px;
+  font-weight:bold;
+  white-space:nowrap;
+}
+.new{background:#513d16;color:#ffd873}
+.accepted{background:#173b54;color:#76caff}
+.preparing{background:#49311a;color:#ffc77b}
+.out{background:#123b25;color:#6ff0a0}
+.delivered{background:#233d2b;color:#8ef3a8}
+
+.customer{
+  font-size:19px;
+  font-weight:bold;
+  margin-top:12px;
+}
+.info{
+  color:#c5b2a7;
+  font-size:13px;
+  line-height:1.65;
+  margin-top:7px;
+}
+.amount{
+  color:#75e69a;
+  font-size:19px;
+  font-weight:bold;
+  margin-top:8px;
+}
+.items{
+  margin-top:12px;
+  padding-top:10px;
+  border-top:1px solid #3a251c;
+  color:#eadbd0;
+  font-size:13px;
+}
+.actions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-top:14px;
+}
+.actions button{width:100%}
+
+.empty{
+  text-align:center;
+  padding:45px 15px;
+  color:#a99488;
+  background:#21130e;
+  border-radius:20px;
+}
+
+#dashboard{display:none}
+
+@media(max-width:600px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .actions{grid-template-columns:1fr}
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="container" style="padding:0">
+    <div class="top" style="margin:0">
+      <div>
+        <div class="logo">Classic Cafe</div>
+        <div class="sub">Delivery Boy Dashboard</div>
+      </div>
+      <div class="online">● ONLINE</div>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+<!-- LOGIN -->
+<div id="loginBox" class="login">
+  <h2>🛵 Delivery Login</h2>
+  <p style="color:#c5b2a7">
+    Delivery key enter karke dashboard open karein.
+  </p>
+
+  <input
+    id="deliveryKey"
+    type="password"
+    placeholder="Enter Delivery Key"
+    autocomplete="off"
+  >
+
+  <button class="primary" onclick="login()">
+    Login
+  </button>
+
+  <div id="loginError"
+       style="color:#ff766d;margin-top:12px"></div>
+</div>
+
+
+<!-- DASHBOARD -->
+<div id="dashboard">
+
+  <div class="top">
+    <div>
+      <h1 style="margin:0;font-size:25px">My Dashboard</h1>
+      <div style="color:#a99488;font-size:13px;margin-top:4px">
+        Manage your assigned deliveries
+      </div>
+    </div>
+
+    <button class="dark" onclick="logout()">Logout</button>
+  </div>
+
+
+  <!-- STATS -->
+  <div class="stats">
+
+    <div class="stat">
+      <b id="activeCount">0</b>
+      <span>Active Orders</span>
+    </div>
+
+    <div class="stat">
+      <b id="outCount">0</b>
+      <span>Out for Delivery</span>
+    </div>
+
+    <div class="stat">
+      <b id="completedCount">0</b>
+      <span>Completed Today</span>
+    </div>
+
+    <div class="stat">
+      <b id="earnings">₹0</b>
+      <span>Today's Earnings</span>
+    </div>
+
+  </div>
+
+
+  <div class="section-title">
+    <h2>📦 My Orders</h2>
+
+    <button class="dark" onclick="loadOrders()">
+      🔄 Refresh
+    </button>
+  </div>
+
+  <div id="orders"></div>
+
+</div>
+
+</div>
+
+
+<script>
+
+let DELIVERY_KEY = localStorage.getItem("classicCafeDeliveryKey") || "";
+let ORDERS = [];
+
+
+function escapeHtml(value){
+  return String(value ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#039;");
+}
+
+
+function statusClass(status){
+
+  if(status==="NEW") return "new";
+  if(status==="ACCEPTED") return "accepted";
+  if(status==="PREPARING") return "preparing";
+  if(status==="OUT_FOR_DELIVERY") return "out";
+  if(status==="DELIVERED") return "delivered";
+
+  return "new";
+}
+
+
+function statusText(status){
+
+  const map={
+    NEW:"NEW ORDER",
+    ACCEPTED:"ACCEPTED",
+    PREPARING:"PREPARING",
+    OUT_FOR_DELIVERY:"OUT FOR DELIVERY",
+    DELIVERED:"DELIVERED",
+    CANCELLED:"CANCELLED"
+  };
+
+  return map[status] || status;
+}
+
+
+async function login(){
+
+  const key=document.getElementById("deliveryKey").value.trim();
+
+  if(!key){
+    document.getElementById("loginError").textContent=
+      "Please enter Delivery Key.";
+    return;
+  }
+
+  try{
+
+    const res=await fetch("/api/orders?limit=1",{
+      headers:{
+        "x-delivery-key":key
+      }
+    });
+
+    const data=await res.json();
+
+    if(!res.ok){
+      throw new Error(data.error || "Invalid Delivery Key");
+    }
+
+    DELIVERY_KEY=key;
+
+    localStorage.setItem(
+      "classicCafeDeliveryKey",
+      key
+    );
+
+    document.getElementById("loginBox").style.display="none";
+    document.getElementById("dashboard").style.display="block";
+
+    loadOrders();
+
+  }catch(err){
+
+    document.getElementById("loginError").textContent=
+      "❌ "+err.message;
+
+  }
+}
+
+
+function logout(){
+
+  localStorage.removeItem("classicCafeDeliveryKey");
+
+  DELIVERY_KEY="";
+
+  document.getElementById("dashboard").style.display="none";
+  document.getElementById("loginBox").style.display="block";
+
+  document.getElementById("deliveryKey").value="";
+}
+
+
+async function loadOrders(){
+
+  if(!DELIVERY_KEY) return;
+
+  const box=document.getElementById("orders");
+
+  box.innerHTML=
+    '<div class="empty">⏳ Loading orders...</div>';
+
+  try{
+
+    const res=await fetch("/api/orders?limit=100",{
+      headers:{
+        "x-delivery-key":DELIVERY_KEY
+      }
+    });
+
+    const data=await res.json();
+
+    if(!res.ok){
+
+      if(res.status===401){
+        logout();
+        return;
+      }
+
+      throw new Error(data.error || "Unable to load orders");
+    }
+
+    ORDERS=data.orders || [];
+
+    renderOrders();
+
+    loadStats();
+
+  }catch(err){
+
+    box.innerHTML=
+      `<div class="empty">❌ ${escapeHtml(err.message)}</div>`;
+
+  }
+}
+
+
+function renderOrders(){
+
+  const box=document.getElementById("orders");
+
+  if(!ORDERS.length){
+
+    box.innerHTML=
+      '<div class="empty">🎉 No active delivery orders right now.</div>';
+
+    return;
+  }
+
+  box.innerHTML=ORDERS.map(order=>{
+
+    const items=(order.items || []).map(x=>
+      `${escapeHtml(x.name)} × ${escapeHtml(x.qty)}`
+    ).join("<br>");
+
+    const navUrl=
+      `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(order.lat+","+order.lng)}`;
+
+    let action="";
+
+    if(order.status==="NEW"){
+
+      action=`
+        <button class="green"
+          onclick="changeStatus('${escapeHtml(order.id)}','ACCEPTED')">
+          ✅ Accept Order
+        </button>
+      `;
+
+    }else if(order.status==="ACCEPTED"){
+
+      action=`
+        <button class="green"
+          onclick="changeStatus('${escapeHtml(order.id)}','PREPARING')">
+          🍳 Preparing
+        </button>
+      `;
+
+    }else if(order.status==="PREPARING"){
+
+      action=`
+        <button class="green"
+          onclick="changeStatus('${escapeHtml(order.id)}','OUT_FOR_DELIVERY')">
+          🛵 Start Delivery
+        </button>
+      `;
+
+    }else if(order.status==="OUT_FOR_DELIVERY"){
+
+      action=`
+        <button class="green"
+          onclick="changeStatus('${escapeHtml(order.id)}','DELIVERED')">
+          ✅ Delivered
+        </button>
+      `;
+
+    }
+
+    return `
+
+      <div class="order">
+
+        <div class="order-head">
+
+          <div class="order-id">
+            #${escapeHtml(order.id)}
+          </div>
+
+          <div class="status ${statusClass(order.status)}">
+            ${statusText(order.status)}
+          </div>
+
+        </div>
+
+
+        <div class="customer">
+          ${escapeHtml(order.customer_name)}
+        </div>
+
+
+        <div class="info">
+
+          📞 ${escapeHtml(order.mobile)}<br>
+
+          📍 ${escapeHtml(order.address)}<br>
+
+          📏 ${Number(order.distance_km || 0).toFixed(2)} KM
+
+        </div>
+
+
+        <div class="amount">
+          ₹${escapeHtml(order.grand_total)}
+        </div>
+
+
+        <div class="items">
+          <b>Items</b><br>
+          ${items || "No item details"}
+        </div>
+
+
+        <div class="actions">
+
+          <a
+            href="tel:${escapeHtml(order.mobile)}"
+            style="text-decoration:none"
+          >
+            <button class="dark" style="width:100%">
+              📞 Call Customer
+            </button>
+          </a>
+
+
+          <a
+            href="${navUrl}"
+            target="_blank"
+            style="text-decoration:none"
+          >
+            <button class="green">
+              🗺️ Navigate
+            </button>
+          </a>
+
+          ${action}
+
+          ${
+            order.status==="OUT_FOR_DELIVERY"
+            ?
+            `<button class="dark"
+              onclick="sendLocation('${escapeHtml(order.id)}')">
+              📍 Update Location
+            </button>`
+            :""
+          }
+
+        </div>
+
+      </div>
+    `;
+
+  }).join("");
+}
+
+
+async function changeStatus(id,status){
+
+  if(!confirm(
+    `Order ${id} ko "${statusText(status)}" karna hai?`
+  )) return;
+
+  try{
+
+    const res=await fetch(
+      "/api/orders/"+encodeURIComponent(id),
+      {
+        method:"PUT",
+        headers:{
+          "content-type":"application/json",
+          "x-delivery-key":DELIVERY_KEY
+        },
+        body:JSON.stringify({
+          status:status
+        })
+      }
+    );
+
+    const data=await res.json();
+
+    if(!res.ok){
+      throw new Error(data.error || "Status update failed");
+    }
+
+    await loadOrders();
+
+  }catch(err){
+
+    alert("❌ "+err.message);
+
+  }
+}
+
+
+function sendLocation(id){
+
+  if(!navigator.geolocation){
+
+    alert("GPS supported nahi hai.");
+    return;
+  }
+
+  alert("📍 GPS location detect ho rahi hai...");
+
+  navigator.geolocation.getCurrentPosition(
+
+    async pos=>{
+
+      try{
+
+        const res=await fetch(
+          "/api/orders/"+encodeURIComponent(id)+"/location",
+          {
+            method:"PUT",
+            headers:{
+              "content-type":"application/json",
+              "x-delivery-key":DELIVERY_KEY
+            },
+            body:JSON.stringify({
+              lat:pos.coords.latitude,
+              lng:pos.coords.longitude
+            })
+          }
+        );
+
+        const data=await res.json();
+
+        if(!res.ok){
+          throw new Error(data.error || "Location update failed");
+        }
+
+        alert("✅ Live location updated.");
+
+        loadOrders();
+
+      }catch(err){
+
+        alert("❌ "+err.message);
+
+      }
+
+    },
+
+    err=>{
+
+      alert(
+        "📍 Location permission allow karein."
+      );
+
+    },
+
+    {
+      enableHighAccuracy:true,
+      timeout:15000,
+      maximumAge:0
+    }
+
+  );
+}
+
+
+async function loadStats(){
+
+  /*
+    Current Worker GET API active orders deta hai.
+    Completed/Earnings ke liye neeche fallback calculation hai.
+  */
+
+  const active=ORDERS.filter(x=>
+    !["DELIVERED","CANCELLED"].includes(x.status)
+  );
+
+  const out=ORDERS.filter(x=>
+    x.status==="OUT_FOR_DELIVERY"
+  );
+
+  document.getElementById("activeCount").textContent=
+    active.length;
+
+  document.getElementById("outCount").textContent=
+    out.length;
+
+  /*
+    Completed/Earnings ke exact numbers ke liye
+    Worker me /api/delivery/stats add karenge.
+  */
+
+  try{
+
+    const res=await fetch("/api/delivery/stats",{
+      headers:{
+        "x-delivery-key":DELIVERY_KEY
+      }
+    });
+
+    if(res.ok){
+
+      const data=await res.json();
+
+      document.getElementById("completedCount").textContent=
+        data.completed_today || 0;
+
+      document.getElementById("earnings").textContent=
+        "₹"+(data.earnings_today || 0);
+
+    }
+
+  }catch(e){
+
+    document.getElementById("completedCount").textContent="0";
+    document.getElementById("earnings").textContent="₹0";
+
+  }
+}
+
+
+/* AUTO LOGIN */
+
+if(DELIVERY_KEY){
+
+  document.getElementById("loginBox").style.display="none";
+  document.getElementById("dashboard").style.display="block";
+
+  loadOrders();
+
+}
+
+
+/* AUTO REFRESH */
+
+setInterval(()=>{
+
+  if(DELIVERY_KEY){
+
+    loadOrders();
+
+  }
+
+},30000);
+
+</script>
+
+</body>
+  </html>
