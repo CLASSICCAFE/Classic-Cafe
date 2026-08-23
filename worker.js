@@ -75,6 +75,29 @@ async function api(request, env, url) {  // ADMIN SETTINGS API
 
     return json({ok:true});
   }
+    /* DELIVERY BOY STATS */
+
+  if(url.pathname==='/api/delivery/stats' && request.method==='GET'){
+
+    if(!authorized(request,env,'delivery')){
+      return json({error:'Unauthorized'},401);
+    }
+
+    const rows=await env.DB.prepare(`
+      SELECT
+        COUNT(*) AS completed_today,
+        COALESCE(SUM(delivery_charge),0) AS earnings_today
+      FROM orders
+      WHERE status='DELIVERED'
+      AND date(created_at,'localtime')=date('now','localtime')
+    `).first();
+
+    return json({
+      ok:true,
+      completed_today:Number(rows?.completed_today || 0),
+      earnings_today:Number(rows?.earnings_today || 0)
+    });
+  }
   if(request.method==='OPTIONS') return new Response(null,{status:204,headers:corsHeaders()});
   if(url.pathname==='/api/health') return json({ok:true,service:'Classic Cafe Orders'});
   if(url.pathname==='/api/orders' && request.method==='POST') {
