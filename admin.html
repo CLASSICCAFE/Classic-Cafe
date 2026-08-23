@@ -537,7 +537,7 @@ footer{
 
 <script>
 
-let K='';
+let K=localStorage.getItem('classicCafeAdminKey')||'';
 let ALL=[];
 
 const out=document.getElementById('orders');
@@ -556,7 +556,7 @@ function esc(s){
 
 async function load(){
 
-  K=document.getElementById('key').value.trim();
+K=document.getElementById('key').value.trim() || localStorage.getItem('classicCafeAdminKey') || '';
 
   if(!K){
     document.getElementById('loginError').innerHTML=
@@ -574,14 +574,16 @@ async function load(){
 
     const d=await r.json();
 
-    if(!r.ok){
+    if(!r.ok){localStorage.removeItem('classicCafeAdminKey');
+K='';
+document.getElementById('key').value='';
 
       document.getElementById('loginError').innerHTML=
         '<p style="color:#b42318">❌ '+esc(d.error||'Invalid Admin Key')+'</p>';
 
       return;
     }
-
+localStorage.setItem('classicCafeAdminKey',K);
     document.getElementById('loginBox').classList.add('hidden');
     document.getElementById('dashboard').classList.remove('hidden');
 
