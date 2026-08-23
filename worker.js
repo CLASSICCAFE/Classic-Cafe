@@ -7,30 +7,20 @@ const RADIUS = 5;
 const DELIVERY_START_MIN = 12 * 60;
 const DELIVERY_END_MIN = 24 * 60;
 
-
-/* =========================
-   DELIVERY TIME
-========================= */
+const DEFAULT_ASSIGN_DISTANCE = 2;
 
 function deliveryOpen(){
-
   const now = new Date();
 
-  const parts =
-    new Intl.DateTimeFormat("en-GB",{
-      timeZone:"Asia/Kolkata",
-      hour:"2-digit",
-      minute:"2-digit",
-      hourCycle:"h23"
-    }).formatToParts(now);
+  const parts = new Intl.DateTimeFormat("en-GB",{
+    timeZone:"Asia/Kolkata",
+    hour:"2-digit",
+    minute:"2-digit",
+    hourCycle:"h23"
+  }).formatToParts(now);
 
-  const h = Number(
-    parts.find(p=>p.type==="hour").value
-  );
-
-  const m = Number(
-    parts.find(p=>p.type==="minute").value
-  );
+  const h = Number(parts.find(p=>p.type==="hour").value);
+  const m = Number(parts.find(p=>p.type==="minute").value);
 
   const mins = h * 60 + m;
 
@@ -38,10 +28,6 @@ function deliveryOpen(){
          mins < DELIVERY_END_MIN;
 }
 
-
-/* =========================
-   JSON
-========================= */
 
 function json(data,status=200){
 
@@ -58,19 +44,15 @@ function json(data,status=200){
 }
 
 
-/* =========================
-   CORS
-========================= */
-
 function corsHeaders(){
 
   return {
     "access-control-allow-origin":"*",
-    "access-control-allow-methods":
-      "GET,POST,PUT,OPTIONS",
+    "access-control-allow-methods":"GET,POST,PUT,OPTIONS",
     "access-control-allow-headers":
       "content-type,x-admin-key,x-delivery-key"
   };
+
 }
 
 
@@ -78,8 +60,9 @@ function withCors(resp){
 
   const h = new Headers(resp.headers);
 
-  Object.entries(corsHeaders())
-    .forEach(([k,v])=>h.set(k,v));
+  Object.entries(corsHeaders()).forEach(([k,v])=>{
+    h.set(k,v);
+  });
 
   return new Response(
     resp.body,
@@ -90,10 +73,6 @@ function withCors(resp){
   );
 }
 
-
-/* =========================
-   DISTANCE
-========================= */
 
 function dist(a,b,c,d){
 
@@ -118,96 +97,482 @@ function dist(a,b,c,d){
 }
 
 
-/* =========================
-   ADMIN AUTH
-========================= */
+function token(){
 
-function authorizedAdmin(request,env){
-
-  const key =
-    request.headers.get("x-admin-key");
-
-  return !!env.ADMIN_KEY &&
-         key === env.ADMIN_KEY;
+  return crypto.randomUUID().replaceAll("-","");
 }
 
 
-/* =========================
-   DELIVERY BOY
-========================= */
+/* =====================================================
+   AUTHENTICATION
+===================================================== */
 
-async function getDeliveryBoy(request,env){
+async function authorized(request,env,type){
+
+  const key =
+    type === "admin"
+      ? request.headers.get("x-admin-key")
+      : request.headers.get("x-delivery-key");
+
+  if(!key) return false;
+
+  if(type === "admin"){
+
+    return !!env.ADMIN_KEY &&
+           key === env.ADMIN_KEY;
+
+  }
+
+  /*
+    Existing DELIVERY_KEY will automatically become
+    DB001 if delivery_boys table is used.
+  */
+
+  if(env.DELIVERY_KEY && key === env.DELIVERY_KEY){
+
+    return true;
+
+  }
+
+  try{
+
+    await ensureDeliveryTables(env);
+
+    const row =
+      await env.DB.prepare(`
+        SELECT id
+        FROM delivery_boys
+        WHERE access_key=?
+        AND active=1
+        LIMIT 1
+      `)
+      .bind(key)
+      .first();
+
+    return !!row;
+
+  }catch{
+
+    return false;
+
+  }
+
+}
+
+
+/* =====================================================
+   D1 TABLES
+===================================================== */
+
+async function ensureDeliveryTables(env){
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS delivery_boys (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      mobile TEXT,
+      access_key TEXT UNIQUE NOT NULL,
+      active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS delivery_assignments (
+      order_id TEXT PRIMARY KEY,
+      delivery_boy_id TEXT NOT NULL,
+      assigned_at TEXT NOT NULL
+    )
+  `).run();
+
+
+  /*
+    Default first delivery boy from existing
+    Cloudflare DELIVERY_KEY
+  */
+
+  if(env.DELIVERY_KEY){
+
+    const exists =
+      await env.DB.prepare(`
+        SELECT id
+        FROM delivery_boys
+        WHERE access_key=?
+        LIMIT 1
+      `)
+      .bind(env.DELIVERY_KEY)
+      .first();
+
+    if(!exists){
+
+      await env.DB.prepare(`
+        INSERT INTO delivery_boys
+        (id,name,mobile,access_key,active,created_at)
+        VALUES (?,?,?,?,?,?)
+      `)
+      .bind(
+        "DB001",
+        "Delivery Boy 1",
+        "",
+        env.DELIVERY_KEY,
+        1,
+        new Date().toISOString()
+      )
+      .run();
+
+    }
+
+  }
+
+}
+
+
+/* =====================================================
+   SETTINGS
+===================================================== */
+
+async function getAssignDistance(env){
+
+  try{
+
+    const row =
+      await env.DB.prepare(`
+        SELECT value
+        FROM settings
+        WHERE key='auto_assign_distance'
+        LIMIT 1
+      `)
+      .first();
+
+    const n = Number(row?.value);
+
+    if(Number.isFinite(n) && n > 0){
+
+      return Math.min(n,10);
+
+    }
+
+  }catch{}
+
+  return DEFAULT_ASSIGN_DISTANCE;
+
+}
+
+
+/* =====================================================
+   GET DELIVERY BOY ID
+===================================================== */
+
+async function getDeliveryBoyId(request,env){
 
   const key =
     request.headers.get("x-delivery-key");
 
   if(!key) return null;
 
-  const row =
+  await ensureDeliveryTables(env);
+
+  let row =
     await env.DB.prepare(`
-      SELECT
-        id,
-        name,
-        phone,
-        delivery_key,
-        active,
-        created_at
+      SELECT id
       FROM delivery_boys
-      WHERE delivery_key=?
+      WHERE access_key=?
       AND active=1
       LIMIT 1
     `)
     .bind(key)
     .first();
 
-  return row || null;
+  if(row) return row.id;
+
+
+  /*
+    Backward compatibility with existing
+    Cloudflare DELIVERY_KEY
+  */
+
+  if(env.DELIVERY_KEY && key === env.DELIVERY_KEY){
+
+    return "DB001";
+
+  }
+
+  return null;
+
 }
 
 
-async function authorizedDelivery(request,env){
+/* =====================================================
+   AUTO ASSIGN ORDER
+===================================================== */
 
-  const boy =
-    await getDeliveryBoy(request,env);
+async function autoAssignOrder(env,orderId,lat,lng){
 
-  return !!boy;
+  await ensureDeliveryTables(env);
+
+  const maxDistance =
+    await getAssignDistance(env);
+
+
+  /*
+    Get all active delivery boys
+  */
+
+  const boys =
+    await env.DB.prepare(`
+      SELECT id,name
+      FROM delivery_boys
+      WHERE active=1
+      ORDER BY id ASC
+    `)
+    .all();
+
+
+  if(!boys.results.length){
+
+    return {
+      assigned:false,
+      reason:"NO_DELIVERY_BOY"
+    };
+
+  }
+
+
+  /*
+    Existing orders which are still being prepared
+    or accepted/new.
+
+    OUT_FOR_DELIVERY is intentionally excluded.
+  */
+
+  const activeOrders =
+    await env.DB.prepare(`
+      SELECT
+        da.delivery_boy_id,
+        o.id,
+        o.lat,
+        o.lng,
+        o.status
+      FROM delivery_assignments da
+      JOIN orders o
+      ON o.id=da.order_id
+      WHERE o.status IN
+      ('NEW','ACCEPTED','PREPARING')
+    `)
+    .all();
+
+
+  /*
+    First priority:
+    Find delivery boy whose existing order
+    is within auto-assign distance.
+  */
+
+  let candidates=[];
+
+
+  for(const boy of boys.results){
+
+    const boyOrders =
+      activeOrders.results.filter(
+        x => x.delivery_boy_id === boy.id
+      );
+
+
+    for(const order of boyOrders){
+
+      if(
+        typeof order.lat !== "number" ||
+        typeof order.lng !== "number"
+      ){
+
+        continue;
+
+      }
+
+
+      const d =
+        dist(
+          order.lat,
+          order.lng,
+          lat,
+          lng
+        );
+
+
+      if(d <= maxDistance){
+
+        candidates.push({
+          boyId:boy.id,
+          distance:d,
+          activeCount:boyOrders.length
+        });
+
+      }
+
+    }
+
+  }
+
+
+  /*
+    If multiple boys are nearby,
+    choose the one with fewer active orders.
+  */
+
+  if(candidates.length){
+
+    candidates.sort(
+      (a,b)=>
+        a.activeCount-b.activeCount ||
+        a.distance-b.distance
+    );
+
+
+    const chosen =
+      candidates[0];
+
+
+    await env.DB.prepare(`
+      INSERT INTO delivery_assignments
+      (order_id,delivery_boy_id,assigned_at)
+      VALUES (?,?,?)
+    `)
+    .bind(
+      orderId,
+      chosen.boyId,
+      new Date().toISOString()
+    )
+    .run();
+
+
+    return {
+      assigned:true,
+      delivery_boy_id:chosen.boyId,
+      distance_km:Number(
+        chosen.distance.toFixed(2)
+      ),
+      rule:"NEARBY_ORDER"
+    };
+
+  }
+
+
+  /*
+    No nearby order.
+
+    Find a delivery boy who currently has
+    no NEW / ACCEPTED / PREPARING order.
+  */
+
+  const busyCounts={};
+
+  for(const row of activeOrders.results){
+
+    busyCounts[row.delivery_boy_id] =
+      (busyCounts[row.delivery_boy_id] || 0) + 1;
+
+  }
+
+
+  const free =
+    boys.results
+      .filter(b => !busyCounts[b.id])
+      .sort((a,b)=>a.id.localeCompare(b.id));
+
+
+  if(free.length){
+
+    const chosen=free[0];
+
+
+    await env.DB.prepare(`
+      INSERT INTO delivery_assignments
+      (order_id,delivery_boy_id,assigned_at)
+      VALUES (?,?,?)
+    `)
+    .bind(
+      orderId,
+      chosen.id,
+      new Date().toISOString()
+    )
+    .run();
+
+
+    return {
+      assigned:true,
+      delivery_boy_id:chosen.id,
+      distance_km:null,
+      rule:"FREE_DELIVERY_BOY"
+    };
+
+  }
+
+
+  /*
+    Nobody suitable right now.
+  */
+
+  return {
+    assigned:false,
+    reason:"NO_SUITABLE_DELIVERY_BOY"
+  };
+
 }
 
 
-/* =========================
-   TOKEN
-========================= */
-
-function token(){
-
-  return crypto
-    .randomUUID()
-    .replaceAll("-","");
-}
-
-
-/* =========================
+/* =====================================================
    API
-========================= */
+===================================================== */
 
 async function api(request,env,url){
 
+  /* OPTIONS */
 
-  /* =========================
+  if(request.method==="OPTIONS"){
+
+    return new Response(
+      null,
+      {
+        status:204,
+        headers:corsHeaders()
+      }
+    );
+
+  }
+
+
+  /* HEALTH */
+
+  if(url.pathname==="/api/health"){
+
+    return json({
+      ok:true,
+      service:"Classic Cafe Orders"
+    });
+
+  }
+
+
+  /* ===================================================
      ADMIN SETTINGS GET
-  ========================= */
+  =================================================== */
 
   if(
     url.pathname==="/api/settings" &&
     request.method==="GET"
   ){
 
-    if(!authorizedAdmin(request,env)){
+    if(!await authorized(request,env,"admin")){
 
       return json(
         {error:"Unauthorized"},
         401
       );
+
     }
+
 
     const rows =
       await env.DB.prepare(`
@@ -217,6 +582,7 @@ async function api(request,env,url){
       `)
       .all();
 
+
     const settings={};
 
     for(const r of rows.results){
@@ -225,29 +591,41 @@ async function api(request,env,url){
 
     }
 
+
+    if(settings.auto_assign_distance===undefined){
+
+      settings.auto_assign_distance =
+        String(DEFAULT_ASSIGN_DISTANCE);
+
+    }
+
+
     return json({
       ok:true,
       settings
     });
+
   }
 
 
-  /* =========================
+  /* ===================================================
      ADMIN SETTINGS PUT
-  ========================= */
+  =================================================== */
 
   if(
     url.pathname==="/api/settings" &&
     request.method==="PUT"
   ){
 
-    if(!authorizedAdmin(request,env)){
+    if(!await authorized(request,env,"admin")){
 
       return json(
         {error:"Unauthorized"},
         401
       );
+
     }
+
 
     let body;
 
@@ -264,6 +642,7 @@ async function api(request,env,url){
 
     }
 
+
     const allowed=[
       "shop_open",
       "website_orders",
@@ -271,22 +650,52 @@ async function api(request,env,url){
       "opening_time",
       "closing_time",
       "delivery_radius",
-      "delivery_rate"
+      "delivery_rate",
+      "auto_assign_distance"
     ];
+
 
     const now =
       new Date().toISOString();
 
+
     for(const key of allowed){
 
-      if(body[key]===undefined)
-        continue;
+      if(body[key]===undefined) continue;
+
+
+      let value=body[key];
+
+
+      if(key==="auto_assign_distance"){
+
+        const n=Number(value);
+
+        if(
+          !Number.isFinite(n) ||
+          n<=0 ||
+          n>10
+        ){
+
+          return json(
+            {
+              error:
+                "Auto assign distance must be between 0 and 10 KM."
+            },
+            400
+          );
+
+        }
+
+        value=n;
+
+      }
+
 
       await env.DB.prepare(`
         INSERT INTO settings
         (key,value,updated_at)
         VALUES (?,?,?)
-
         ON CONFLICT(key)
         DO UPDATE SET
         value=excluded.value,
@@ -294,197 +703,88 @@ async function api(request,env,url){
       `)
       .bind(
         key,
-        String(body[key]),
+        String(value),
         now
       )
       .run();
 
     }
 
-    return json({
-      ok:true
-    });
-  }
-
-
-  /* =========================
-     DELIVERY BOY LOGIN INFO
-  ========================= */
-
-  if(
-    url.pathname==="/api/delivery/me" &&
-    request.method==="GET"
-  ){
-
-    const boy =
-      await getDeliveryBoy(request,env);
-
-    if(!boy){
-
-      return json(
-        {error:"Invalid or inactive Delivery Key"},
-        401
-      );
-    }
 
     return json({
       ok:true,
-      delivery_boy:{
-        id:boy.id,
-        name:boy.name,
-        phone:boy.phone
-      }
+      auto_assign_distance:
+        await getAssignDistance(env)
     });
+
   }
 
 
-  /* =========================
+  /* ===================================================
      ADMIN DELIVERY BOYS LIST
-  ========================= */
+  =================================================== */
 
   if(
     url.pathname==="/api/delivery/boys" &&
     request.method==="GET"
   ){
 
-    if(!authorizedAdmin(request,env)){
+    if(!await authorized(request,env,"admin")){
 
       return json(
         {error:"Unauthorized"},
         401
       );
+
     }
+
+
+    await ensureDeliveryTables(env);
+
 
     const rows =
       await env.DB.prepare(`
         SELECT
           id,
           name,
-          phone,
+          mobile,
           active,
           created_at
         FROM delivery_boys
-        ORDER BY id
+        ORDER BY id ASC
       `)
       .all();
 
+
     return json({
       ok:true,
-      delivery_boys:rows.results
+      boys:rows.results
     });
+
   }
 
 
-  /* =========================
-     DELIVERY BOY STATS
-  ========================= */
+  /* ===================================================
+     ADMIN CREATE DELIVERY BOY
+  =================================================== */
 
   if(
-    url.pathname==="/api/delivery/stats" &&
-    request.method==="GET"
+    url.pathname==="/api/delivery/boys" &&
+    request.method==="POST"
   ){
 
-    const boy =
-      await getDeliveryBoy(request,env);
-
-    if(!boy){
+    if(!await authorized(request,env,"admin")){
 
       return json(
         {error:"Unauthorized"},
         401
       );
-    }
-
-    const rows =
-      await env.DB.prepare(`
-        SELECT
-          COUNT(*) AS completed_today,
-          COALESCE(
-            SUM(delivery_charge),0
-          ) AS earnings_today
-        FROM orders
-        WHERE status='DELIVERED'
-        AND delivery_boy_id=?
-        AND date(
-          created_at,
-          'localtime'
-        )=date(
-          'now',
-          'localtime'
-        )
-      `)
-      .bind(boy.id)
-      .first();
-
-    return json({
-
-      ok:true,
-
-      delivery_boy_id:boy.id,
-
-      delivery_boy_name:boy.name,
-
-      completed_today:
-        Number(
-          rows?.completed_today || 0
-        ),
-
-      earnings_today:
-        Number(
-          rows?.earnings_today || 0
-        )
-    });
-  }
-
-
-  /* =========================
-     OPTIONS
-  ========================= */
-
-  if(request.method==="OPTIONS"){
-
-    return new Response(
-      null,
-      {
-        status:204,
-        headers:corsHeaders()
-      }
-    );
-  }
-
-
-  /* =========================
-     HEALTH
-  ========================= */
-
-  if(
-    url.pathname==="/api/health"
-  ){
-
-    return json({
-      ok:true,
-      service:"Classic Cafe Orders"
-    });
-  }
-
-
-  /* =========================
-     CREATE ORDER
-  ========================= */
-
-  if(
-    url.pathname==="/api/orders" &&
-    request.method==="POST"
-  ){
-
-    if(!deliveryOpen()){
-
-      return json({
-        error:
-          "Home delivery is open from 12:00 PM to 12:00 AM."
-      },400);
 
     }
+
+
+    await ensureDeliveryTables(env);
+
 
     let body;
 
@@ -494,11 +794,329 @@ async function api(request,env,url){
 
     }catch{
 
-      return json({
-        error:"Invalid JSON"
-      },400);
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
 
     }
+
+
+    const name=String(body.name||"").trim();
+    const mobile=String(body.mobile||"").trim();
+    const accessKey=
+      String(body.access_key||"").trim();
+
+
+    if(!name || !accessKey){
+
+      return json(
+        {
+          error:
+            "Name and Delivery Key are required."
+        },
+        400
+      );
+
+    }
+
+
+    const existing =
+      await env.DB.prepare(`
+        SELECT id
+        FROM delivery_boys
+        WHERE access_key=?
+      `)
+      .bind(accessKey)
+      .first();
+
+
+    if(existing){
+
+      return json(
+        {
+          error:
+            "This Delivery Key is already in use."
+        },
+        409
+      );
+
+    }
+
+
+    const rows =
+      await env.DB.prepare(`
+        SELECT id
+        FROM delivery_boys
+        ORDER BY id DESC
+      `)
+      .all();
+
+
+    let number=1;
+
+
+    if(rows.results.length){
+
+      const last =
+        rows.results[0].id;
+
+
+      const n =
+        Number(
+          String(last).replace("DB","")
+        );
+
+
+      if(Number.isFinite(n)){
+
+        number=n+1;
+
+      }
+
+    }
+
+
+    const id =
+      "DB"+String(number).padStart(3,"0");
+
+
+    await env.DB.prepare(`
+      INSERT INTO delivery_boys
+      (id,name,mobile,access_key,active,created_at)
+      VALUES (?,?,?,?,?,?)
+    `)
+    .bind(
+      id,
+      name,
+      mobile,
+      accessKey,
+      1,
+      new Date().toISOString()
+    )
+    .run();
+
+
+    return json({
+      ok:true,
+      delivery_boy:{
+        id,
+        name,
+        mobile,
+        active:1
+      }
+    });
+
+  }
+
+
+  /* ===================================================
+     ADMIN ENABLE / DISABLE DELIVERY BOY
+  =================================================== */
+
+  const boyMatch =
+    url.pathname.match(
+      /^\/api\/delivery\/boys\/([^/]+)$/
+    );
+
+
+  if(
+    boyMatch &&
+    request.method==="PUT"
+  ){
+
+    if(!await authorized(request,env,"admin")){
+
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
+
+    }
+
+
+    await ensureDeliveryTables(env);
+
+
+    const id=boyMatch[1];
+
+
+    let body;
+
+    try{
+
+      body=await request.json();
+
+    }catch{
+
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
+
+    }
+
+
+    if(body.active!==undefined){
+
+      await env.DB.prepare(`
+        UPDATE delivery_boys
+        SET active=?
+        WHERE id=?
+      `)
+      .bind(
+        body.active ? 1 : 0,
+        id
+      )
+      .run();
+
+    }
+
+
+    const row =
+      await env.DB.prepare(`
+        SELECT
+          id,
+          name,
+          mobile,
+          active
+        FROM delivery_boys
+        WHERE id=?
+      `)
+      .bind(id)
+      .first();
+
+
+    if(!row){
+
+      return json(
+        {error:"Delivery Boy not found"},
+        404
+      );
+
+    }
+
+
+    return json({
+      ok:true,
+      delivery_boy:row
+    });
+
+  }
+
+
+  /* ===================================================
+     DELIVERY BOY STATS
+  =================================================== */
+
+  if(
+    url.pathname==="/api/delivery/stats" &&
+    request.method==="GET"
+  ){
+
+    if(!await authorized(request,env,"delivery")){
+
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
+
+    }
+
+
+    await ensureDeliveryTables(env);
+
+
+    const boyId =
+      await getDeliveryBoyId(
+        request,
+        env
+      );
+
+
+    if(!boyId){
+
+      return json(
+        {error:"Delivery Boy not found"},
+        401
+      );
+
+    }
+
+
+    const rows =
+      await env.DB.prepare(`
+        SELECT
+          COUNT(*) AS completed_today,
+          COALESCE(
+            SUM(o.delivery_charge),
+            0
+          ) AS earnings_today
+        FROM orders o
+        JOIN delivery_assignments da
+        ON da.order_id=o.id
+        WHERE da.delivery_boy_id=?
+        AND o.status='DELIVERED'
+        AND date(
+          o.created_at,
+          'localtime'
+        )=date(
+          'now',
+          'localtime'
+        )
+      `)
+      .bind(boyId)
+      .first();
+
+
+    return json({
+      ok:true,
+      completed_today:
+        Number(rows?.completed_today||0),
+      earnings_today:
+        Number(rows?.earnings_today||0)
+    });
+
+  }
+
+
+  /* ===================================================
+     CREATE ORDER
+  =================================================== */
+
+  if(
+    url.pathname==="/api/orders" &&
+    request.method==="POST"
+  ){
+
+    if(!deliveryOpen()){
+
+      return json(
+        {
+          error:
+            "Home delivery is open from 12:00 PM to 12:00 AM."
+        },
+        400
+      );
+
+    }
+
+
+    let body;
+
+    try{
+
+      body=await request.json();
+
+    }catch{
+
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
+
+    }
+
 
     const {
       customer_name,
@@ -522,10 +1140,13 @@ async function api(request,env,url){
       !items.length
     ){
 
-      return json({
-        error:
-          "Missing or invalid order details"
-      },400);
+      return json(
+        {
+          error:
+            "Missing or invalid order details"
+        },
+        400
+      );
 
     }
 
@@ -541,12 +1162,15 @@ async function api(request,env,url){
 
     if(d>RADIUS){
 
-      return json({
-        error:
-          "Delivery is available only within 5 KM",
-        distance_km:
-          Number(d.toFixed(2))
-      },400);
+      return json(
+        {
+          error:
+            "Delivery is available only within 5 KM",
+          distance_km:
+            Number(d.toFixed(2))
+        },
+        400
+      );
 
     }
 
@@ -566,6 +1190,7 @@ async function api(request,env,url){
       const p=Number(x.price);
       const q=Number(x.qty);
 
+
       if(
         !x.name ||
         !Number.isFinite(p) ||
@@ -574,13 +1199,16 @@ async function api(request,env,url){
         q>50
       ){
 
-        return json({
-          error:"Invalid item"
-        },400);
+        return json(
+          {error:"Invalid item"},
+          400
+        );
 
       }
 
+
       food += p*q;
+
     }
 
 
@@ -616,11 +1244,10 @@ async function api(request,env,url){
         payment_method,
         payment_status,
         status,
-        items_json,
-        delivery_boy_id
+        items_json
       )
       VALUES
-      (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `)
     .bind(
       id,
@@ -637,8 +1264,7 @@ async function api(request,env,url){
       "COD_OR_UPI_TO_DELIVERY_BOY",
       "UNPAID",
       "NEW",
-      JSON.stringify(items),
-      null
+      JSON.stringify(items)
     )
     .run();
 
@@ -655,8 +1281,20 @@ async function api(request,env,url){
     .run();
 
 
-    return json({
+    /*
+      AUTO ASSIGN
+    */
 
+    const assignment =
+      await autoAssignOrder(
+        env,
+        id,
+        lat,
+        lng
+      );
+
+
+    return json({
       ok:true,
 
       order_id:id,
@@ -677,15 +1315,16 @@ async function api(request,env,url){
 
       status:"NEW",
 
-      delivery_boy_id:null
+      assignment
 
     });
+
   }
 
 
-  /* =========================
+  /* ===================================================
      GET ORDERS
-  ========================= */
+  =================================================== */
 
   if(
     url.pathname==="/api/orders" &&
@@ -693,24 +1332,41 @@ async function api(request,env,url){
   ){
 
     const adminAllowed =
-      authorizedAdmin(request,env);
+      await authorized(
+        request,
+        env,
+        "admin"
+      );
 
-    const boy =
-      await getDeliveryBoy(request,env);
 
-    if(!adminAllowed && !boy){
+    const deliveryAllowed =
+      await authorized(
+        request,
+        env,
+        "delivery"
+      );
+
+
+    if(
+      !adminAllowed &&
+      !deliveryAllowed
+    ){
 
       return json(
         {error:"Unauthorized"},
         401
       );
+
     }
+
+
+    await ensureDeliveryTables(env);
 
 
     const limit =
       Math.min(
         Number(
-          url.searchParams.get("limit") || 100
+          url.searchParams.get("limit")||100
         ),
         200
       );
@@ -719,60 +1375,57 @@ async function api(request,env,url){
     let rows;
 
 
-    /* DELIVERY BOY */
+    if(deliveryAllowed && !adminAllowed){
 
-    if(!adminAllowed && boy){
+      const boyId =
+        await getDeliveryBoyId(
+          request,
+          env
+        );
+
+
+      if(!boyId){
+
+        return json(
+          {error:"Delivery Boy not found"},
+          401
+        );
+
+      }
+
 
       rows =
         await env.DB.prepare(`
           SELECT
             o.*,
-            d.name AS delivery_boy_name
+            da.delivery_boy_id
           FROM orders o
-
-          LEFT JOIN delivery_boys d
-          ON d.id=o.delivery_boy_id
-
-          WHERE
-          o.status NOT IN
+          JOIN delivery_assignments da
+          ON da.order_id=o.id
+          WHERE da.delivery_boy_id=?
+          AND o.status NOT IN
           ('DELIVERED','CANCELLED')
-
-          AND
-          (
-            o.delivery_boy_id=?
-            OR o.delivery_boy_id IS NULL
-          )
-
-          ORDER BY
-          o.created_at ASC
-
+          ORDER BY o.created_at ASC
           LIMIT ?
         `)
         .bind(
-          boy.id,
+          boyId,
           limit
         )
         .all();
 
-    }
 
-    /* ADMIN */
-
-    else{
+    }else{
 
       rows =
         await env.DB.prepare(`
           SELECT
             o.*,
-            d.name AS delivery_boy_name
+            da.delivery_boy_id
           FROM orders o
-
-          LEFT JOIN delivery_boys d
-          ON d.id=o.delivery_boy_id
-
-          ORDER BY
-          o.created_at DESC
-
+          LEFT JOIN delivery_assignments da
+          ON da.order_id=o.id
+          ORDER BY o.created_at DESC
           LIMIT ?
         `)
         .bind(limit)
@@ -782,28 +1435,27 @@ async function api(request,env,url){
 
 
     return json({
-
       ok:true,
 
       orders:
-        rows.results.map(r=>({
-
-          ...r,
-
-          items:
-            JSON.parse(
-              r.items_json
-            )
-
-        }))
+        rows.results.map(
+          r=>({
+            ...r,
+            items:
+              JSON.parse(
+                r.items_json
+              )
+          })
+        )
 
     });
+
   }
 
 
-  /* =========================
+  /* ===================================================
      TRACK ORDER
-  ========================= */
+  =================================================== */
 
   const tm =
     url.pathname.match(
@@ -827,21 +1479,13 @@ async function api(request,env,url){
           o.delivery_charge,
           o.grand_total,
           o.distance_km,
-          d.name AS delivery_boy_name,
           t.lat,
           t.lng,
           t.updated_at
-
         FROM orders o
-
         JOIN order_tracking t
         ON t.order_id=o.id
-
-        LEFT JOIN delivery_boys d
-        ON d.id=o.delivery_boy_id
-
-        WHERE
-        t.tracking_token=?
+        WHERE t.tracking_token=?
       `)
       .bind(tm[1])
       .first();
@@ -849,67 +1493,48 @@ async function api(request,env,url){
 
     if(!row){
 
-      return json({
-        error:
-          "Tracking link invalid or expired"
-      },404);
+      return json(
+        {
+          error:
+            "Tracking link invalid or expired"
+        },
+        404
+      );
 
     }
 
 
     return json({
-
       ok:true,
 
       order:{
-
         id:row.id,
-
-        created_at:
-          row.created_at,
-
-        customer_name:
-          row.customer_name,
-
-        status:
-          row.status,
-
-        food_total:
-          row.food_total,
-
-        delivery_charge:
-          row.delivery_charge,
-
-        grand_total:
-          row.grand_total,
-
-        distance_km:
-          row.distance_km,
-
-        delivery_boy_name:
-          row.delivery_boy_name,
+        created_at:row.created_at,
+        customer_name:row.customer_name,
+        status:row.status,
+        food_total:row.food_total,
+        delivery_charge:row.delivery_charge,
+        grand_total:row.grand_total,
+        distance_km:row.distance_km,
 
         location:
           row.lat!=null
-          ?
-          {
-            lat:row.lat,
-            lng:row.lng,
-            updated_at:
-              row.updated_at
-          }
-          :
-          null
-
+          ? {
+              lat:row.lat,
+              lng:row.lng,
+              updated_at:row.updated_at
+            }
+          : null
       }
 
     });
+
   }
 
 
-  /* =========================
-     DELIVERY LOCATION
-  ========================= */
+  /* ===================================================
+     DELIVERY BOY LOCATION
+  =================================================== */
 
   const lm =
     url.pathname.match(
@@ -922,14 +1547,35 @@ async function api(request,env,url){
     request.method==="PUT"
   ){
 
-    const boy =
-      await getDeliveryBoy(request,env);
+    if(
+      !await authorized(
+        request,
+        env,
+        "delivery"
+      )
+    ){
 
-    if(!boy){
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
 
-      return json({
-        error:"Unauthorized"
-      },401);
+    }
+
+
+    const boyId =
+      await getDeliveryBoyId(
+        request,
+        env
+      );
+
+
+    if(!boyId){
+
+      return json(
+        {error:"Delivery Boy not found"},
+        401
+      );
 
     }
 
@@ -942,9 +1588,10 @@ async function api(request,env,url){
 
     }catch{
 
-      return json({
-        error:"Invalid JSON"
-      },400);
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
 
     }
 
@@ -962,19 +1609,49 @@ async function api(request,env,url){
       lng>180
     ){
 
-      return json({
-        error:"Invalid location"
-      },400);
+      return json(
+        {error:"Invalid location"},
+        400
+      );
+
+    }
+
+
+    /*
+      Ensure this order belongs to
+      this Delivery Boy.
+    */
+
+    const assignment =
+      await env.DB.prepare(`
+        SELECT order_id
+        FROM delivery_assignments
+        WHERE order_id=?
+        AND delivery_boy_id=?
+      `)
+      .bind(
+        lm[1],
+        boyId
+      )
+      .first();
+
+
+    if(!assignment){
+
+      return json(
+        {
+          error:
+            "This order is not assigned to you."
+        },
+        403
+      );
 
     }
 
 
     const order =
       await env.DB.prepare(`
-        SELECT
-          id,
-          status,
-          delivery_boy_id
+        SELECT id,status
         FROM orders
         WHERE id=?
       `)
@@ -984,21 +1661,10 @@ async function api(request,env,url){
 
     if(!order){
 
-      return json({
-        error:"Order not found"
-      },404);
-
-    }
-
-
-    if(
-      order.delivery_boy_id !== boy.id
-    ){
-
-      return json({
-        error:
-          "This order is not assigned to you"
-      },403);
+      return json(
+        {error:"Order not found"},
+        404
+      );
 
     }
 
@@ -1009,10 +1675,9 @@ async function api(request,env,url){
 
     await env.DB.prepare(`
       UPDATE order_tracking
-      SET
-        lat=?,
-        lng=?,
-        updated_at=?
+      SET lat=?,
+          lng=?,
+          updated_at=?
       WHERE order_id=?
     `)
     .bind(
@@ -1032,8 +1697,7 @@ async function api(request,env,url){
       await env.DB.prepare(`
         UPDATE orders
         SET status='OUT_FOR_DELIVERY'
-        WHERE
-        id=?
+        WHERE id=?
         AND status IN
         ('NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY')
       `)
@@ -1044,18 +1708,16 @@ async function api(request,env,url){
 
 
     return json({
-
       ok:true,
-
       updated_at:now
-
     });
+
   }
 
 
-  /* =========================
-     ORDER STATUS / ASSIGNMENT
-  ========================= */
+  /* ===================================================
+     UPDATE ORDER STATUS
+  =================================================== */
 
   const m =
     url.pathname.match(
@@ -1079,25 +1741,39 @@ async function api(request,env,url){
 
     }catch{
 
-      return json({
-        error:"Invalid JSON"
-      },400);
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
 
     }
 
 
+    const deliveryAllowed =
+      await authorized(
+        request,
+        env,
+        "delivery"
+      );
+
+
     const adminAllowed =
-      authorizedAdmin(request,env);
+      await authorized(
+        request,
+        env,
+        "admin"
+      );
 
-    const boy =
-      await getDeliveryBoy(request,env);
 
+    if(
+      !deliveryAllowed &&
+      !adminAllowed
+    ){
 
-    if(!adminAllowed && !boy){
-
-      return json({
-        error:"Unauthorized"
-      },401);
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
 
     }
 
@@ -1119,147 +1795,59 @@ async function api(request,env,url){
       )
     ){
 
-      return json({
-        error:"Invalid status"
-      },400);
+      return json(
+        {error:"Invalid status"},
+        400
+      );
 
     }
 
 
-    const order =
-      await env.DB.prepare(`
-        SELECT
-          id,
-          status,
-          delivery_boy_id
-        FROM orders
-        WHERE id=?
-      `)
-      .bind(id)
-      .first();
-
-
-    if(!order){
-
-      return json({
-        error:"Order not found"
-      },404);
-
-    }
-
-
-    /* =========================
-       ADMIN ASSIGN DELIVERY BOY
-    ========================= */
+    /*
+      Delivery Boy can change only
+      his own assigned order.
+    */
 
     if(
-      adminAllowed &&
-      body.delivery_boy_id !== undefined
+      deliveryAllowed &&
+      !adminAllowed
     ){
 
-      const assignedId =
-        body.delivery_boy_id || null;
+      const boyId =
+        await getDeliveryBoyId(
+          request,
+          env
+        );
 
 
-      if(assignedId){
-
-        const deliveryBoy =
-          await env.DB.prepare(`
-            SELECT id
-            FROM delivery_boys
-            WHERE id=?
-            AND active=1
-          `)
-          .bind(assignedId)
-          .first();
-
-
-        if(!deliveryBoy){
-
-          return json({
-            error:
-              "Delivery Boy not found or inactive"
-          },400);
-
-        }
-
-      }
-
-
-      await env.DB.prepare(`
-        UPDATE orders
-        SET delivery_boy_id=?
-        WHERE id=?
-      `)
-      .bind(
-        assignedId,
-        id
-      )
-      .run();
-
-    }
-
-
-    /* =========================
-       DELIVERY BOY ACTION
-    ========================= */
-
-    if(!adminAllowed && boy){
-
-      /*
-        If order is unassigned,
-        first delivery boy who accepts
-        gets the order.
-      */
-
-      if(
-        body.status==="ACCEPTED" &&
-        !order.delivery_boy_id
-      ){
-
+      const assignment =
         await env.DB.prepare(`
-          UPDATE orders
-          SET delivery_boy_id=?
-          WHERE id=?
-          AND delivery_boy_id IS NULL
+          SELECT order_id
+          FROM delivery_assignments
+          WHERE order_id=?
+          AND delivery_boy_id=?
         `)
         .bind(
-          boy.id,
-          id
+          id,
+          boyId
         )
-        .run();
-
-      }
-
-
-      const latest =
-        await env.DB.prepare(`
-          SELECT
-            delivery_boy_id
-          FROM orders
-          WHERE id=?
-        `)
-        .bind(id)
         .first();
 
 
-      if(
-        latest.delivery_boy_id !== boy.id
-      ){
+      if(!assignment){
 
-        return json({
-          error:
-            "This order is assigned to another Delivery Boy"
-        },403);
+        return json(
+          {
+            error:
+              "This order is not assigned to you."
+          },
+          403
+        );
 
       }
 
     }
 
-
-    /* =========================
-       STATUS UPDATE
-    ========================= */
 
     if(body.status){
 
@@ -1277,31 +1865,30 @@ async function api(request,env,url){
     }
 
 
-    /* =========================
-       PAYMENT UPDATE
-    ========================= */
-
     if(
       body.payment_status &&
       adminAllowed
     ){
 
-      const allowedPayment=[
+      const ps=[
         "UNPAID",
         "PAID"
       ];
 
 
       if(
-        !allowedPayment.includes(
+        !ps.includes(
           body.payment_status
         )
       ){
 
-        return json({
-          error:
-            "Invalid payment status"
-        },400);
+        return json(
+          {
+            error:
+              "Invalid payment status"
+          },
+          400
+        );
 
       }
 
@@ -1320,22 +1907,31 @@ async function api(request,env,url){
     }
 
 
-    /* =========================
-       RETURN UPDATED ORDER
-    ========================= */
-
     const row =
       await env.DB.prepare(`
-        SELECT
-          o.*,
-          d.name AS delivery_boy_name,
-          d.phone AS delivery_boy_phone
-        FROM orders o
+        SELECT *
+        FROM orders
+        WHERE id=?
+      `)
+      .bind(id)
+      .first();
 
-        LEFT JOIN delivery_boys d
-        ON d.id=o.delivery_boy_id
 
-        WHERE o.id=?
+    if(!row){
+
+      return json(
+        {error:"Order not found"},
+        404
+      );
+
+    }
+
+
+    const assignment =
+      await env.DB.prepare(`
+        SELECT delivery_boy_id
+        FROM delivery_assignments
+        WHERE order_id=?
       `)
       .bind(id)
       .first();
@@ -1346,30 +1942,34 @@ async function api(request,env,url){
       ok:true,
 
       order:{
-
         ...row,
+
+        delivery_boy_id:
+          assignment?.delivery_boy_id ||
+          null,
 
         items:
           JSON.parse(
             row.items_json
           )
-
       }
 
     });
+
   }
 
 
-  return json({
-    error:"Not found"
-  },404);
+  return json(
+    {error:"Not found"},
+    404
+  );
 
 }
 
 
-/* =========================
+/* =====================================================
    MAIN WORKER
-========================= */
+===================================================== */
 
 export default {
 
@@ -1448,7 +2048,9 @@ export default {
     }
 
 
-    return env.ASSETS.fetch(request);
+    return env.ASSETS.fetch(
+      request
+    );
 
   }
 
