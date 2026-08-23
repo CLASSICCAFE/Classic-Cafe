@@ -385,6 +385,7 @@ footer{
 
       <div class="control">
         <b>Shop Status</b>
+        <span id="shopState">—</span>
         <button class="green" onclick="shopStatus('OPEN')">
           🟢 Open
         </button>
@@ -395,6 +396,7 @@ footer{
 
       <div class="control">
         <b>Website Orders</b>
+        <span id="websiteState">—</span>
         <button class="green" onclick="websiteStatus(true)">
           ON
         </button>
@@ -405,6 +407,7 @@ footer{
 
       <div class="control">
         <b>Delivery</b>
+        <span id="deliveryState">—</span>
         <button class="green" onclick="deliveryStatus(true)">
           ON
         </button>
@@ -536,7 +539,7 @@ async function load(){
 
     updateStats();
     filterOrders();
-
+loadSettings();
     document.getElementById('lastUpdate').textContent=
       new Date().toLocaleTimeString();
 
@@ -816,47 +819,138 @@ function clearFilters(){
   से permanently connect करेंगे.
 */
 
-function shopStatus(status){
+/* =========================
+   D1 SHOP SETTINGS
+========================= */
 
-  localStorage.setItem('classicCafeShop',status);
+let SETTINGS={};
 
-  alert(
-    status==='OPEN'
-    ? '🟢 Shop marked OPEN'
-    : '🔴 Shop marked CLOSED'
-  );
+async function loadSettings(){
+
+  if(!K) return;
+
+  try{
+
+    const r=await fetch('/api/settings',{
+      method:'GET',
+      headers:{
+        'x-admin-key':K
+      }
+    });
+
+    const d=await r.json();
+
+    if(!r.ok){
+      console.log('Settings error:',d.error);
+      return;
+    }
+
+    SETTINGS=d.settings||{};
+
+    updateSettingsUI();
+
+  }catch(e){
+
+    console.log('Settings load failed',e);
+
+  }
+
+}
+
+
+function updateSettingsUI(){
+
+  const shop=String(SETTINGS.shop_open||'true')==='true';
+  const website=String(SETTINGS.website_orders||'true')==='true';
+  const delivery=String(SETTINGS.delivery_enabled||'true')==='true';
+
+  const shopEl=document.getElementById('shopState');
+  const websiteEl=document.getElementById('websiteState');
+  const deliveryEl=document.getElementById('deliveryState');
+
+  if(shopEl)
+    shopEl.textContent=shop?'🟢 OPEN':'🔴 CLOSED';
+
+  if(websiteEl)
+    websiteEl.textContent=website?'🟢 ON':'🔴 OFF';
+
+  if(deliveryEl)
+    deliveryEl.textContent=delivery?'🟢 ON':'🔴 OFF';
 
 }
 
-function websiteStatus(on){
 
-  localStorage.setItem(
-    'classicCafeWebsite',
-    on?'ON':'OFF'
-  );
+async function saveSettings(changes){
 
-  alert(
-    on
-    ? '🟢 Website ordering ON'
-    : '🔴 Website ordering OFF'
-  );
+  if(!K){
+    alert('❌ Admin login required');
+    return;
+  }
+
+  try{
+
+    const r=await fetch('/api/settings',{
+      method:'PUT',
+
+      headers:{
+        'content-type':'application/json',
+        'x-admin-key':K
+      },
+
+      body:JSON.stringify(changes)
+
+    });
+
+    const d=await r.json();
+
+    if(!r.ok){
+
+      alert('❌ '+(d.error||'Settings update failed'));
+
+      return;
+    }
+
+    SETTINGS=d.settings||{
+      ...SETTINGS,
+      ...changes
+    };
+
+    updateSettingsUI();
+
+  }catch(e){
+
+    alert('❌ Could not save settings');
+
+  }
 
 }
 
-function deliveryStatus(on){
 
-  localStorage.setItem(
-    'classicCafeDelivery',
-    on?'ON':'OFF'
-  );
+async function shopStatus(status){
 
-  alert(
-    on
-    ? '🟢 Delivery ON'
-    : '🔴 Delivery OFF'
-  );
+  await saveSettings({
+    shop_open:status==='OPEN'
+  });
 
 }
+
+
+async function websiteStatus(on){
+
+  await saveSettings({
+    website_orders:!!on
+  });
+
+}
+
+
+async function deliveryStatus(on){
+
+  await saveSettings({
+    delivery_enabled:!!on
+  });
+
+  }
 
 
 /* AUTO REFRESH */
