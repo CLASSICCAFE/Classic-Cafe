@@ -185,7 +185,28 @@ async function ensureDeliveryTables(env){
       assigned_at TEXT NOT NULL
     )
   `).run();
+  /* ===================================================
+     DELIVERY OTP VERIFICATION
+  =================================================== */
 
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS delivery_otp_requests (
+      id TEXT PRIMARY KEY,
+      mobile TEXT NOT NULL,
+      otp TEXT NOT NULL,
+      delivery_boy_id TEXT,
+      approved INTEGER DEFAULT 0,
+      used INTEGER DEFAULT 0,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
+
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_delivery_otp_mobile
+    ON delivery_otp_requests(mobile)
+  `).run();
 
   /*
     Default first delivery boy from existing
