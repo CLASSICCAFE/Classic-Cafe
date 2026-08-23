@@ -207,7 +207,14 @@ async function ensureDeliveryTables(env){
     CREATE INDEX IF NOT EXISTS idx_delivery_otp_mobile
     ON delivery_otp_requests(mobile)
   `).run();
-
+await env.DB.prepare(`
+  CREATE TABLE IF NOT EXISTS delivery_sessions (
+    token TEXT PRIMARY KEY,
+    delivery_boy_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )
+`).run();
   /*
     Default first delivery boy from existing
     Cloudflare DELIVERY_KEY
@@ -548,6 +555,269 @@ async function autoAssignOrder(env,orderId,lat,lng){
 ===================================================== */
 
 async function api(request,env,url){
+  /* ===================================================
+     DELIVERY OTP - REQUEST
+  =================================================== */
+
+  if(
+    url.pathname==="/api/delivery/otp/request" &&
+    request.method==="POST"
+  ){
+
+    await ensureDeliveryTables(env);
+
+    let body;
+
+    try{
+      body=await request.json();
+    }catch{
+      return json({error:"Invalid JSON"},400);
+    }
+
+    const mobile=String(body.mobile||"").trim();
+
+    if(!/^[0-9]{10}$/.test(mobile)){
+      return json(
+        {error:"Valid 10 digit mobile number required."},
+        400
+      );
+    }
+
+    const boy=
+      await env.DB.prepare(`
+        SELECT id,name,mobile,active
+        FROM delivery_boys
+        WHERE mobile=?
+        LIMIT 1
+      `)
+      .bind(mobile)
+      .first();
+
+    if(!boy){
+      return json(
+        {error:"This mobile number is not registered as Delivery Boy."},
+        404
+      );
+    }
+
+    if(!Number(boy.active)){
+      return json(
+        {error:"This Delivery Boy is disabled by Admin."},
+        403
+      );
+    }
+
+    /*
+      OTP will be approved by Admin.
+      No public login without Admin verification.
+    */
+
+    const otp=
+      String(
+        Math.floor(
+          100000 + Math.random()*900000
+        )
+      );
+
+    const id=crypto.randomUUID();
+
+    const now=new Date();
+
+    const expires=
+      new Date(
+        now.getTime()+5*60*1000
+      ).toISOString();
+
+    await env.DB.prepare(`
+      UPDATE delivery_otp_requests
+      SET used=1
+      WHERE mobile=?
+      AND used=0
+    `)
+    .bind(mobile)
+    .run();
+
+    await env.DB.prepare(`
+      INSERT INTO delivery_otp_requests
+      (
+        id,
+        mobile,
+        otp,
+        delivery_boy_id,
+        approved,
+        used,
+        expires_at,
+        created_at
+      )
+      VALUES (?,?,?,?,?,?,?,?)
+    `)
+    .bind(
+      id,
+      mobile,
+      otp,
+      boy.id,
+      0,
+      0,
+      expires,
+      now.toISOString()
+    )
+    .run();
+
+    return json({
+      ok:true,
+      message:"OTP request created. Admin verification required.",
+      request_id:id,
+      delivery_boy_id:boy.id,
+      name:boy.name
+    });
+
+  }  /* ===================================================
+     ADMIN - PENDING DELIVERY OTP REQUESTS
+  =================================================== */
+
+  if(
+    url.pathname==="/api/admin/delivery/otp" &&
+    request.method==="GET"
+  ){
+
+    if(!await authorized(request,env,"admin")){
+
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
+
+    }
+
+    await ensureDeliveryTables(env);
+
+    const rows =
+      await env.DB.prepare(`
+        SELECT
+          r.id,
+          r.mobile,
+          r.otp,
+          r.delivery_boy_id,
+          r.approved,
+          r.used,
+          r.expires_at,
+          r.created_at,
+          b.name
+        FROM delivery_otp_requests r
+        LEFT JOIN delivery_boys b
+        ON b.id=r.delivery_boy_id
+        WHERE r.used=0
+        AND r.expires_at > ?
+        ORDER BY r.created_at DESC
+      `)
+      .bind(new Date().toISOString())
+      .all();
+
+    return json({
+      ok:true,
+      requests:rows.results
+    });
+
+}  /* ===================================================
+     ADMIN - APPROVE DELIVERY OTP
+  =================================================== */
+
+  const otpApproveMatch =
+    url.pathname.match(
+      /^\/api\/admin\/delivery\/otp\/([^/]+)\/approve$/
+    );
+
+  if(
+    otpApproveMatch &&
+    request.method==="PUT"
+  ){
+
+    if(!await authorized(request,env,"admin")){
+
+      return json(
+        {error:"Unauthorized"},
+        401
+      );
+
+    }
+
+    await ensureDeliveryTables(env);
+
+    const requestId =
+      otpApproveMatch[1];
+
+    const row =
+      await env.DB.prepare(`
+        SELECT
+          id,
+          mobile,
+          otp,
+          delivery_boy_id,
+          approved,
+          used,
+          expires_at
+        FROM delivery_otp_requests
+        WHERE id=?
+        LIMIT 1
+      `)
+      .bind(requestId)
+      .first();
+
+    if(!row){
+
+      return json(
+        {error:"OTP request not found."},
+        404
+      );
+
+    }
+
+    if(Number(row.used)){
+
+      return json(
+        {error:"This OTP request has already been used."},
+        400
+      );
+
+    }
+
+    if(new Date(row.expires_at).getTime() <= Date.now()){
+
+      return json(
+        {error:"This OTP request has expired."},
+        400
+      );
+
+    }
+
+    if(Number(row.approved)){
+
+      return json({
+        ok:true,
+        message:"OTP already approved.",
+        request_id:row.id
+      });
+
+    }
+
+    await env.DB.prepare(`
+      UPDATE delivery_otp_requests
+      SET approved=1
+      WHERE id=?
+    `)
+    .bind(requestId)
+    .run();
+
+    return json({
+      ok:true,
+      message:"Delivery Boy OTP approved successfully.",
+      request_id:row.id,
+      delivery_boy_id:row.delivery_boy_id,
+      mobile:row.mobile
+    });
+
+  }
+
 
   /* OPTIONS */
 
@@ -562,7 +832,170 @@ async function api(request,env,url){
     );
 
   }
+  /* ===================================================
+     DELIVERY OTP - VERIFY / LOGIN
+  =================================================== */
 
+  if(
+    url.pathname==="/api/delivery/otp/verify" &&
+    request.method==="POST"
+  ){
+
+    await ensureDeliveryTables(env);
+
+    let body;
+
+    try{
+      body=await request.json();
+    }catch{
+      return json(
+        {error:"Invalid JSON"},
+        400
+      );
+    }
+
+    const mobile=String(body.mobile||"").trim();
+    const otp=String(body.otp||"").trim();
+
+    if(!/^[0-9]{10}$/.test(mobile)){
+      return json(
+        {error:"Valid 10 digit mobile number required."},
+        400
+      );
+    }
+
+    if(!/^[0-9]{6}$/.test(otp)){
+      return json(
+        {error:"Enter valid 6 digit OTP."},
+        400
+      );
+    }
+
+    const row =
+      await env.DB.prepare(`
+        SELECT
+          id,
+          mobile,
+          otp,
+          delivery_boy_id,
+          approved,
+          used,
+          expires_at
+        FROM delivery_otp_requests
+        WHERE mobile=?
+        AND otp=?
+        ORDER BY created_at DESC
+        LIMIT 1
+      `)
+      .bind(mobile,otp)
+      .first();
+
+    if(!row){
+      return json(
+        {error:"Invalid OTP."},
+        401
+      );
+    }
+
+    if(Number(row.used)){
+      return json(
+        {error:"This OTP has already been used."},
+        401
+      );
+    }
+
+    if(new Date(row.expires_at).getTime() <= Date.now()){
+      return json(
+        {error:"OTP has expired. Please request a new OTP."},
+        401
+      );
+    }
+
+    if(!Number(row.approved)){
+      return json(
+        {
+          error:
+            "Admin approval pending. Please ask Admin to approve your login."
+        },
+        403
+      );
+    }
+
+    const boy =
+      await env.DB.prepare(`
+        SELECT
+          id,
+          name,
+          mobile,
+          active
+        FROM delivery_boys
+        WHERE id=?
+        LIMIT 1
+      `)
+      .bind(row.delivery_boy_id)
+      .first();
+
+    if(!boy){
+      return json(
+        {error:"Delivery Boy not found."},
+        404
+      );
+    }
+
+    if(!Number(boy.active)){
+      return json(
+        {error:"Your Delivery Boy account is disabled."},
+        403
+      );
+    }
+
+    const sessionToken =
+      crypto.randomUUID().replaceAll("-","");
+
+    const sessionExpires =
+      new Date(
+        Date.now()+12*60*60*1000
+      ).toISOString();
+
+    await env.DB.prepare(`
+      INSERT INTO delivery_sessions
+      (
+        token,
+        delivery_boy_id,
+        expires_at,
+        created_at
+      )
+      VALUES (?,?,?,?)
+    `)
+    .bind(
+      sessionToken,
+      boy.id,
+      sessionExpires,
+      new Date().toISOString()
+    )
+    .run();
+
+    await env.DB.prepare(`
+      UPDATE delivery_otp_requests
+      SET used=1
+      WHERE id=?
+    `)
+    .bind(row.id)
+    .run();
+
+    return json({
+      ok:true,
+      message:"Delivery Boy login successful.",
+      session_token:sessionToken,
+      expires_at:sessionExpires,
+      delivery_boy:{
+        id:boy.id,
+        name:boy.name,
+        mobile:boy.mobile
+      }
+    });
+
+}
 
   /* HEALTH */
 
