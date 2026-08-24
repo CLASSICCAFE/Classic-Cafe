@@ -30,8 +30,8 @@ input,select{border:1px solid #ddd;background:#fff;width:100%}
 .orderId{font-weight:900;font-size:18px}.status{padding:6px 10px;border-radius:20px;font-size:12px;font-weight:800;background:#f3e8dc}
 .items{background:#fff;border:1px solid #eee;border-radius:12px;padding:10px;margin-top:10px;line-height:1.7}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.actions button{font-size:12px;padding:9px 10px}
 .notice{padding:12px;border-radius:12px;background:#fff3d9;margin-bottom:12px}.error{padding:10px;border-radius:10px;background:#ffe4e4;color:#b42318;margin-top:10px}
-.empty{text-align:center;padding:30px;color:#777}
-.small{font-size:12px;color:#777}
+.empty{text-align:center;padding:30px;color:#777}.alertItem{border:1px solid var(--line);border-radius:14px;padding:12px;margin:9px 0;background:#fffdf9}.alertItem.unread{border-left:5px solid var(--orange);background:#fff7e8}.alertDot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--red);margin-right:6px}.menuTop{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}.offerRow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}
+.small{font-size:12px;color:#777}.liveBanner{border:2px solid var(--orange);background:#fff3d9}.toast{position:fixed;right:14px;bottom:14px;z-index:9999;max-width:360px;padding:14px 16px;border-radius:14px;background:#241311;color:#fff;box-shadow:0 10px 30px #0005}.orderFlow{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.flowStep{padding:5px 8px;border-radius:12px;background:#f2e7dc;font-size:11px;font-weight:800}.flowStep.active{background:#168447;color:#fff}
 footer{text-align:center;padding:28px;color:#777;font-size:13px}
 @media(max-width:900px){.stats{grid-template-columns:repeat(3,1fr)}.shopControl{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){main{padding:10px}.stats{grid-template-columns:repeat(2,1fr)}.shopControl,.menuGrid,.timeGrid{grid-template-columns:1fr}.stat b{font-size:22px}}
@@ -43,6 +43,7 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
     <div class="logo">☕ Classic Cafe<small>Owner Admin Dashboard · Secure Session</small></div>
     <div class="controlActions">
       <button class="gold" onclick="loadAll()">🔄 Refresh</button>
+      <button class="green" onclick="enableAlerts()">🔔 Alerts</button>
       <button onclick="logout()">🔒 Logout</button>
     </div>
   </div>
@@ -53,6 +54,12 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
 
   <div class="notice">
     🟢 <b>Admin Panel Active</b> — Admin Key अब हर बार नहीं डालनी पड़ेगी। Secure session 7 दिन तक चलेगा.
+  </div>
+  <div id="liveOrderBanner" style="display:none" class="card"></div>
+
+  <div class="card">
+    <div class="row"><h3>🔔 Notifications / Alerts <span id="alertCount" class="badge bad">0</span></h3><div class="controlActions"><button class="gold" onclick="loadNotifications()">🔄 Refresh</button><button class="blue" onclick="markAllNotificationsRead()">✅ Mark All Read</button></div></div>
+    <div id="notifications" class="small">Loading alerts…</div>
   </div>
 
   <section class="stats">
@@ -102,7 +109,16 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   </div>
 
   <div class="card">
-    <div class="row"><h3>🍔 Menu / Item Availability</h3><button class="gold" onclick="loadMenu()">🔄 Refresh</button></div>
+    <div class="row"><h3>🍔 Menu / Item Availability & Offers</h3><button class="gold" onclick="loadMenu()">🔄 Refresh</button></div>
+    <div class="control" style="margin-bottom:12px">
+      <b>➕ Add Menu Item</b>
+      <div class="timeGrid">
+        <input id="newItemName" placeholder="Item name (e.g. Cheese Burger)">
+        <input id="newItemCategory" placeholder="Category (e.g. Burger)">
+        <button class="green" onclick="addMenuItem()">💾 Add Item</button>
+      </div>
+      <p class="small">हर item के लिए Availability और Offer नीचे मिलेगा।</p>
+    </div>
     <div id="menuItems" class="menuGrid"></div>
   </div>
 
@@ -126,9 +142,51 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
 
 <script>
 let SETTINGS={}, ORDERS=[];
+let knownOrderIds=new Set();
+let alertWatcherStarted=false;
+let polling=false;
+let audioCtx=null;
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const $=id=>document.getElementById(id);
+
+async function enableAlerts(){
+  try{
+    if('Notification' in window){
+      const permission=await Notification.requestPermission();
+      if(permission==='granted') showToast('🔔 Browser alerts enabled. New orders will notify you.');
+      else showToast('🔔 Browser alerts permission not granted. In-page alerts will still work.');
+    }else showToast('🔔 Browser notifications are not supported here. In-page alerts will still work.');
+  }catch(e){showToast('Alerts: '+e.message)}
+}
+
+function showToast(msg){
+  const old=document.querySelector('.toast'); if(old) old.remove();
+  const el=document.createElement('div'); el.className='toast'; el.textContent=msg; document.body.appendChild(el);
+  setTimeout(()=>el.remove(),5000);
+}
+
+function beep(){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=880; g.gain.value=.06; o.connect(g);g.connect(audioCtx.destination);o.start();
+    setTimeout(()=>{o.frequency.value=660},160);setTimeout(()=>o.stop(),320);
+  }catch{}
+}
+
+function browserAlert(title,body){
+  showToast(title+' — '+body); beep();
+  try{if('Notification' in window && Notification.permission==='granted') new Notification(title,{body,tag:'classic-cafe-'+Date.now(),requireInteraction:true});}catch{}
+}
+
+function renderLiveOrder(o){
+  if(!o){$('liveOrderBanner').style.display='none';return;}
+  const items=(o.items||[]).map(i=>`${esc(i.name)} × ${esc(i.qty)}`).join(' · ');
+  $('liveOrderBanner').style.display='block';
+  $('liveOrderBanner').className='card liveBanner';
+  $('liveOrderBanner').innerHTML=`<div class="row"><div><h3 style="margin:0">🆕 New Order ${esc(o.id)}</h3><div class="small">${esc(o.created_at||'')}</div></div><span class="badge warn">₹${Number(o.grand_total||0)}</span></div><p style="margin-bottom:8px">👤 <b>${esc(o.customer_name)}</b> · 📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}<br>🍽️ ${items||'No items'}<br>💳 ${esc(o.payment_status||'UNPAID')} · 🚴 ${esc(o.delivery_boy_id||'Not assigned')}</p><div class="controlActions"><button class="green" onclick="setStatus('${esc(o.id)}','ACCEPTED')">👍 Accept Order</button><button onclick="document.getElementById('orders').scrollIntoView({behavior:'smooth'})">📦 Open Order</button></div>`;
+}
 
 function showError(msg){
   $('errorBox').innerHTML=msg?`<div class="error">❌ ${esc(msg)}</div>`:'';
@@ -254,22 +312,30 @@ async function saveDeliveryConfig(){
   await saveSettings({delivery_radius:radius,delivery_rate:rate});
 }
 
+async function addMenuItem(){
+  try{
+    const name=$('newItemName').value.trim(), category=$('newItemCategory').value.trim();
+    if(!name) return showError('Menu item name डालें।');
+    if(!category) return showError('Category डालें।');
+    await api('/api/admin/menu',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,category,available:true})});
+    $('newItemName').value='';$('newItemCategory').value='';
+    await loadMenu();
+  }catch(e){showError(e.message)}
+}
+
 async function loadMenu(){
   try{
     const d=await api('/api/admin/menu');
     $('menuItems').innerHTML=(d.items||[]).map(i=>{
       const available=Number(i.available)===1;
       return `<div class="menuItem">
-        <div class="row"><b>${esc(i.name)}</b><span class="badge ${available?'ok':'bad'}">${available?'🟢 AVAILABLE':'🔴 SOLD OUT'}</span></div>
-        <div class="small">${esc(i.category||'')}</div>
-        <label class="small">🏷️ Offer</label>
-        <div class="controlActions">
-          <input id="offer-${esc(i.id)}" value="${esc(i.offer_text||'')}" placeholder="e.g. 15% OFF / Combo Offer" maxlength="120">
-          <button class="orange" onclick="saveOffer('${esc(i.id)}')">💾 Save Offer</button>
-        </div>
+        <div class="menuTop"><b>${esc(i.name)}</b><span class="badge ${available?'ok':'bad'}">${available?'🟢 AVAILABLE':'🔴 SOLD OUT'}</span></div>
+        <div class="small">Category: ${esc(i.category||'—')}</div>
+        <div class="offerRow"><input id="offer-${esc(i.id)}" value="${esc(i.offer_text||'')}" placeholder="🏷️ Offer: 15% OFF / Combo Offer" maxlength="120"><button class="orange" onclick="saveOffer('${esc(i.id)}')">💾 Offer</button></div>
         <div class="controlActions">
           <button class="green" onclick="setItem('${esc(i.id)}','available')">🟢 Available</button>
           <button class="red" onclick="setItem('${esc(i.id)}','soldout')">🔴 Sold Out</button>
+          <button onclick="setItem('${esc(i.id)}','hidden')">👁️ Hide</button>
         </div>
       </div>`;
     }).join('')||'<div class="empty">No menu items.</div>';
@@ -293,6 +359,30 @@ async function saveOffer(id){
     });
     await loadMenu();
   }catch(e){showError(e.message)}
+}
+
+async function loadNotifications(){
+  try{
+    const d=await api('/api/admin/notifications?limit=50');
+    const list=d.notifications||[];
+    $('alertCount').textContent=String(d.unread||0);
+    $('notifications').innerHTML=list.map(n=>`<div class="alertItem ${Number(n.read)?'':'unread'}">
+      <div class="row"><b>${Number(n.read)?'':'<span class="alertDot"></span>'}${esc(n.title)}</b><span class="small">${esc(n.created_at||'')}</span></div>
+      <div style="margin-top:6px">${esc(n.body)}</div>
+      ${n.order_id?`<div class="small">Order: ${esc(n.order_id)}</div>`:''}
+      ${Number(n.read)?'':`<button class="blue" style="margin-top:8px" onclick="markNotificationRead('${esc(n.id)}')">✅ Read</button>`}
+    </div>`).join('')||'<div class="empty">🔕 No notifications yet.</div>';
+  }catch(e){showError(e.message)}
+}
+
+async function markNotificationRead(id){
+  try{await api('/api/admin/notifications/read',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({id})});await loadNotifications();}
+  catch(e){showError(e.message)}
+}
+
+async function markAllNotificationsRead(){
+  try{await api('/api/admin/notifications/read',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({all:true})});await loadNotifications();}
+  catch(e){showError(e.message)}
 }
 
 async function loadOtp(){
@@ -351,13 +441,12 @@ async function loadBoys(){
 }
 
 function statusButtons(o){
-  return `<div class="actions">
-    <button onclick="setStatus('${esc(o.id)}','ACCEPTED')">👍 Accept</button>
-    <button onclick="setStatus('${esc(o.id)}','PREPARING')">👨‍🍳 Preparing</button>
-    <button class="orange" onclick="setStatus('${esc(o.id)}','OUT_FOR_DELIVERY')">🚴 Out</button>
-    <button class="green" onclick="setStatus('${esc(o.id)}','DELIVERED')">✅ Delivered</button>
-    <button class="red" onclick="setStatus('${esc(o.id)}','CANCELLED')">❌ Cancel</button>
-  </div>`;
+  const id=esc(o.id);
+  if(o.status==='NEW') return `<div class="actions"><button class="green" onclick="setStatus('${id}','ACCEPTED')">👍 Accept Order</button><button class="red" onclick="setStatus('${id}','CANCELLED')">❌ Cancel</button></div>`;
+  if(o.status==='ACCEPTED') return `<div class="actions"><button class="orange" onclick="setStatus('${id}','PREPARING')">👨‍🍳 Start Preparing</button><button class="red" onclick="setStatus('${id}','CANCELLED')">❌ Cancel</button></div>`;
+  if(o.status==='PREPARING') return `<div class="actions"><button class="orange" onclick="setStatus('${id}','OUT_FOR_DELIVERY')">🚴 Send for Delivery</button><button class="red" onclick="setStatus('${id}','CANCELLED')">❌ Cancel</button></div>`;
+  if(o.status==='OUT_FOR_DELIVERY') return `<div class="actions"><button class="green" onclick="setStatus('${id}','DELIVERED')">✅ Mark Delivered</button></div>`;
+  return `<div class="actions"><span class="badge ${o.status==='DELIVERED'?'ok':'bad'}">${o.status==='DELIVERED'?'✅ Completed':'❌ Cancelled'}</span></div>`;
 }
 
 async function loadOrders(){
@@ -371,10 +460,13 @@ async function loadOrders(){
         <div class="items">${items||'No items'}</div>
         <p>💰 Food ₹${Number(o.food_total||0)} + Delivery ₹${Number(o.delivery_charge||0)} = <b>₹${Number(o.grand_total||0)}</b><br>
         💳 ${esc(o.payment_status||'UNPAID')}</p>
+        <div class="orderFlow"><span class="flowStep ${o.status==='NEW'?'active':''}">1. Received</span><span class="flowStep ${o.status==='ACCEPTED'?'active':''}">2. Accepted</span><span class="flowStep ${o.status==='PREPARING'?'active':''}">3. Preparing</span><span class="flowStep ${o.status==='OUT_FOR_DELIVERY'?'active':''}">4. Delivery</span><span class="flowStep ${o.status==='DELIVERED'?'active':''}">5. Delivered</span></div>
         ${statusButtons(o)}
       </div>`;
     }).join('')||'<div class="empty">📭 No orders.</div>';
     updateStats();
+    const latest=ORDERS.find(x=>x.status==='NEW');
+    renderLiveOrder(latest||null);
   }catch(e){showError(e.message)}
 }
 
@@ -396,11 +488,46 @@ async function setStatus(id,status){
   }catch(e){showError(e.message)}
 }
 
+async function checkForNewOrders(){
+  if(polling) return;
+  polling=true;
+  try{
+    const d=await api('/api/orders?limit=100');
+    const list=d.orders||[];
+    const current=new Set(list.map(o=>String(o.id)));
+    if(!alertWatcherStarted){
+      knownOrderIds=current;
+      alertWatcherStarted=true;
+      const latest=list.find(o=>o.status==='NEW');
+      if(latest) renderLiveOrder(latest);
+      return;
+    }
+    const fresh=list.filter(o=>!knownOrderIds.has(String(o.id)));
+    knownOrderIds=current;
+    if(fresh.length){
+      const o=fresh[0];
+      browserAlert('🆕 Classic Cafe — New Order',`${o.id} · ${o.customer_name} · ₹${Number(o.grand_total||0)}`);
+      await Promise.all([loadOrders(),loadNotifications()]);
+    }
+  }catch(e){
+    // Do not put a red error banner on every background poll. Manual Refresh still shows errors.
+  }finally{polling=false;}
+}
+
+function startAlertWatcher(){
+  if(!alertWatcherStarted){
+    setTimeout(checkForNewOrders,4000);
+  }
+  // This is NOT a dashboard refresh: it only checks for new orders and
+  // updates the order/alert cards when a new order exists.
+  setInterval(checkForNewOrders,5000);
+}
+
 async function loadAll(){
   showError('');
   try{
     await loadSettings();
-    await Promise.all([loadMenu(),loadOtp(),loadBoys(),loadOrders()]);
+    await Promise.all([loadNotifications(),loadMenu(),loadOtp(),loadBoys(),loadOrders()]);
     $('lastUpdate').textContent=new Date().toLocaleTimeString();
   }catch(e){
     if(e.message!=='Admin login required.') showError(e.message);
@@ -415,8 +542,7 @@ async function logout(){
   }
 }
 
-loadAll();
-setInterval(loadAll,15000);
+loadAll().then(startAlertWatcher);
 </script>
 </body>
 </html>
