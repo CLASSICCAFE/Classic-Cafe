@@ -9,3 +9,11 @@ Changes:
 
 Important:
 The Chrome "Check your passwords / deceptive site" popup is a Chrome Safe Browsing/password-manager warning, not an application popup. It cannot be guaranteed to disappear by JavaScript changes. If it appears, do not enter passwords on an untrusted site; for this cafe site, verify the domain and HTTPS certificate before continuing.
+
+
+V8 FIX:
+- Fixed the exact D1 PRIMARY KEY collision on delivery_boys.id (DB001).
+- Existing DB001 is reused/updated instead of being inserted again.
+- New Delivery Boy IDs are calculated from all existing DB### rows.
+- Registration retries safely if two requests choose the same ID.
+- Legacy delivery_key schemas remain supported.
