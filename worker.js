@@ -231,6 +231,9 @@ async function getSettings(env){
 }
 
 async function ensureDeliveryTables(env){
+  // Keep this migration backward-compatible with older delivery_boys schemas.
+  // The old code accidentally used a non-existent delivery_key column, which
+  // caused EVERY /api request to fail before the requested endpoint ran.
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_boys(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,mobile TEXT,
@@ -295,7 +298,14 @@ async function ensureDeliveryTables(env){
       await env.DB.prepare(`
         INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
         VALUES(?,?,?,?,?,?)
-      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
+      `).bind(
+        "DB001",
+        "Delivery Boy 1",
+        "",
+        env.DELIVERY_KEY,
+        1,
+        new Date().toISOString()
+      ).run();
     }
   }
 }
@@ -314,11 +324,9 @@ async function adminSessionValid(request,env){
     await ensureCoreTables(env);
     const s=getCookie(request,"classic_admin_session");
     if(!s) return false;
-    const row=await env.DB.prepare(`
-      SELECT token FROM admin_sessions
-      WHERE token=? AND expires_at>?
-      LIMIT 1
-    `).bind(s,new Date().toISOString()).first();
+    const row = await env.DB.prepare(
+  "SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ? LIMIT 1"
+).bind(s, new Date().toISOString()).first();
     return !!row;
   }catch{
     return false;
@@ -350,8 +358,6 @@ async function authorized(request,env,type){
 
     const key=request.headers.get("x-delivery-key");
     if(!key) return false;
-    if(env.DELIVERY_KEY && key===env.DELIVERY_KEY) return true;
-
     try{
       await ensureDeliveryTables(env);
       const row=await env.DB.prepare(`
@@ -381,7 +387,7 @@ async function getDeliveryBoyId(request,env){
   const row=await env.DB.prepare(`
     SELECT id FROM delivery_boys WHERE access_key=? AND active=1 LIMIT 1
   `).bind(key).first();
-  return row?.id || (env.DELIVERY_KEY && key===env.DELIVERY_KEY ? "DB001" : null);
+  return row?.id || null;
 }
 
 async function getAssignDistance(env){
@@ -762,9 +768,18 @@ async function api(request,env,url){
     }
     const id="DB"+String(n).padStart(3,"0");
     await env.DB.prepare(`
-      INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
+      INSERT INTO delivery_boys(
+        id,name,mobile,access_key,active,created_at
+      )
       VALUES(?,?,?,?,?,?)
-    `).bind(id,name,mobile,accessKey,1,new Date().toISOString()).run();
+    `).bind(
+      id,
+      name,
+      mobile,
+      accessKey,
+      1,
+      new Date().toISOString()
+    ).run();
     return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
 
