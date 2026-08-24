@@ -1,3 +1,4 @@
+import { sendPushNotification } from "@mmmike/web-push/send";
 const CAFE_LAT = 26.252917;
 const CAFE_LNG = 72.964081;
 
@@ -176,6 +177,8 @@ async function ensureCoreTables(env){
       category TEXT,
       price REAL,
       available INTEGER DEFAULT 1,
+      discount_percent REAL DEFAULT 15,
+      offer_enabled INTEGER DEFAULT 1,
       updated_at TEXT NOT NULL
     )
   `).run();
@@ -184,6 +187,14 @@ async function ensureCoreTables(env){
   try{
     await env.DB.prepare(`ALTER TABLE menu_items ADD COLUMN price REAL`).run();
   }catch{}
+  try{
+    await env.DB.prepare(`ALTER TABLE menu_items ADD COLUMN discount_percent REAL DEFAULT 15`).run();
+  }catch{}
+  try{
+    await env.DB.prepare(`ALTER TABLE menu_items ADD COLUMN offer_enabled INTEGER DEFAULT 1`).run();
+  }catch{}
+  // Existing items receive the original default 15% offer only when the new
+  // columns were just introduced. Admin can later set any item to 0%/OFF.
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS admin_sessions(
@@ -196,8 +207,8 @@ async function ensureCoreTables(env){
   const now=new Date().toISOString();
   for(const [id,name,category,price] of MENU){
     await env.DB.prepare(`
-      INSERT INTO menu_items(id,name,category,price,available,updated_at)
-      VALUES(?,?,?,?,1,?)
+      INSERT INTO menu_items(id,name,category,price,available,discount_percent,offer_enabled,updated_at)
+      VALUES(?,?,?,?,1,15,1,?)
       ON CONFLICT(name) DO UPDATE SET
         category=excluded.category,
         price=COALESCE(menu_items.price,excluded.price)
@@ -462,17 +473,29 @@ async function publicMenu(env){
   await ensureCoreTables(env);
 
   const rows=await env.DB.prepare(`
-    SELECT id,name,category,price,available,updated_at
+    SELECT id,name,category,price,available,discount_percent,offer_enabled,updated_at
     FROM menu_items ORDER BY category,name
   `).all();
 
-  return rows.results.map(x=>({
-    ...x,
-    available:Number(x.available)===1,
-    price:x.price==null?null:Number(x.price)
-  }));
+  return rows.results.map(x=>{
+    const price=x.price==null?null:Number(x.price);
+    const pct=Math.min(100,Math.max(0,Number(x.discount_percent)||0));
+    const enabled=Number(x.offer_enabled)===1 && pct>0 && price!=null;
+    const discountPrice=enabled
+      ? Math.round(price*(1-pct/100)*100)/100
+      : price;
+    return {
+      ...x,
+      available:Number(x.available)===1,
+      price,
+      discount_percent:pct,
+      offer_enabled:enabled,
+      original_price:price,
+      discount_price:discountPrice,
+      discount_amount:price!=null&&discountPrice!=null?Math.round((price-discountPrice)*100)/100:0
+    };
+  });
 }
-
 async function checkItemsAvailable(env,items){
   await ensureCoreTables(env);
 
@@ -480,21 +503,146 @@ async function checkItemsAvailable(env,items){
     const name=String(item.name||"").trim();
 
     const row=await env.DB.prepare(`
-      SELECT available,price FROM menu_items
-      WHERE lower(name)=lower(?) LIMIT 1
+      SELECT available,price,discount_percent,offer_enabled
+      FROM menu_items WHERE lower(name)=lower(?) LIMIT 1
     `).bind(name).first();
 
     if(row&&Number(row.available)!==1){
       return {ok:false,item:name,reason:"UNAVAILABLE"};
     }
 
-    // If the item exists in the database, always use the server price.
     if(row&&row.price!=null){
-      item.price=Number(row.price);
+      const original=Number(row.price);
+      const pct=Math.min(100,Math.max(0,Number(row.discount_percent)||0));
+      const enabled=Number(row.offer_enabled)===1 && pct>0;
+      const discountPrice=enabled
+        ? Math.round(original*(1-pct/100)*100)/100
+        : original;
+      item.price=discountPrice;
+      item.original_price=original;
+      item.discount_percent=enabled?pct:0;
+      item.discount_price=discountPrice;
+      item.discount_amount=Math.round((original-discountPrice)*100)/100;
     }
   }
 
   return {ok:true};
+}
+async function ensureNotificationTables(env){
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS notification_events(
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      order_id TEXT,
+      delivery_boy_id TEXT,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      seen_at TEXT
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_notification_events_created
+    ON notification_events(created_at)
+  `).run();
+}
+
+async function ensurePushTables(env){
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions(
+      id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      subscription_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_push_role_user ON push_subscriptions(role,user_id)`).run();
+}
+
+function getVapid(env){
+  if(!env.VAPID_PUBLIC_KEY||!env.VAPID_PRIVATE_KEY||!env.VAPID_SUBJECT) return null;
+  return {publicKey:env.VAPID_PUBLIC_KEY,privateKey:env.VAPID_PRIVATE_KEY,subject:env.VAPID_SUBJECT};
+}
+
+async function sendPushToSubscriptions(env,rows,payload){
+  const vapid=getVapid(env);
+  if(!vapid||!rows?.length) return {sent:0,gone:0,failed:0,configured:!!vapid};
+  let sent=0,gone=0,failed=0;
+  for(const row of rows){
+    try{
+      const sub=JSON.parse(row.subscription_json);
+      const ok=await sendPushNotification(sub,payload,vapid,{ttl:86400,urgency:"high"});
+      if(ok){sent++;}
+      else{
+        gone++;
+        await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint=?`).bind(row.endpoint).run();
+      }
+    }catch(e){
+      failed++;
+      console.error("PUSH SEND ERROR",e?.message||e);
+    }
+  }
+  return {sent,gone,failed,configured:true};
+}
+
+async function pushToRole(env,role,userId,payload){
+  try{
+    await ensurePushTables(env);
+    const rows=await env.DB.prepare(`
+      SELECT endpoint,subscription_json FROM push_subscriptions
+      WHERE role=? AND user_id=?
+    `).bind(role,userId).all();
+    return await sendPushToSubscriptions(env,rows.results,payload);
+  }catch(e){
+    console.error("PUSH ROLE ERROR",e?.message||e);
+    return {sent:0,gone:0,failed:1,configured:!!getVapid(env)};
+  }
+}
+
+async function pushAdmins(env,payload){
+  try{
+    await ensurePushTables(env);
+    const rows=await env.DB.prepare(`SELECT endpoint,subscription_json FROM push_subscriptions WHERE role='admin'`).all();
+    return await sendPushToSubscriptions(env,rows.results,payload);
+  }catch(e){
+    console.error("PUSH ADMIN ERROR",e?.message||e);
+    return {sent:0,gone:0,failed:1,configured:!!getVapid(env)};
+  }
+}
+
+async function createNotificationEvent(env,{type,orderId=null,deliveryBoyId=null,title,body}){
+  try{
+    await ensureNotificationTables(env);
+    await env.DB.prepare(`
+      INSERT INTO notification_events(id,type,order_id,delivery_boy_id,title,body,created_at)
+      VALUES(?,?,?,?,?,?,?)
+    `).bind(
+      token(),type,orderId,deliveryBoyId,title,body,new Date().toISOString()
+    ).run();
+  }catch(e){
+    console.error("NOTIFICATION EVENT ERROR:",e?.message||e);
+  }
+  try{
+    const payload={
+      title,
+      body,
+      url: orderId?`/admin?order=${encodeURIComponent(orderId)}`:"/admin",
+      tag:`classic-cafe-${type}-${orderId||"general"}`,
+      data:{type,order_id:orderId,delivery_boy_id:deliveryBoyId},
+      requireInteraction:true,
+      silent:false
+    };
+    if(deliveryBoyId){
+      await pushToRole(env,"delivery",String(deliveryBoyId),payload);
+    }else{
+      await pushAdmins(env,payload);
+    }
+  }catch(e){
+    console.error("NOTIFICATION PUSH ERROR:",e?.message||e);
+  }
 }
 
 async function api(request,env,url){
@@ -588,21 +736,28 @@ async function api(request,env,url){
     const id=String(b.id||("MENU-"+token().slice(0,12)));
     const available=b.available===undefined?true:!!b.available;
     const price=b.price==null?null:Number(b.price);
+    const discountPercent=b.discount_percent===undefined?15:Number(b.discount_percent);
+    const offerEnabled=b.offer_enabled===undefined?true:!!b.offer_enabled;
 
     if(price!==null&&(!Number.isFinite(price)||price<0)){
       return json({error:"Invalid price"},400);
     }
+    if(!Number.isFinite(discountPercent)||discountPercent<0||discountPercent>100){
+      return json({error:"Discount percent must be between 0 and 100."},400);
+    }
 
     await env.DB.prepare(`
-      INSERT INTO menu_items(id,name,category,price,available,updated_at)
-      VALUES(?,?,?,?,?,?)
+      INSERT INTO menu_items(id,name,category,price,available,discount_percent,offer_enabled,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET
         category=excluded.category,
         price=excluded.price,
         available=excluded.available,
+        discount_percent=excluded.discount_percent,
+        offer_enabled=excluded.offer_enabled,
         updated_at=excluded.updated_at
     `).bind(
-      id,name,category,price,available?1:0,new Date().toISOString()
+      id,name,category,price,available?1:0,discountPercent,offerEnabled?1:0,new Date().toISOString()
     ).run();
 
     return json({ok:true,items:await publicMenu(env)});
@@ -679,6 +834,22 @@ async function api(request,env,url){
       await env.DB.prepare(`
         UPDATE menu_items SET price=?,updated_at=? WHERE id=?
       `).bind(price,new Date().toISOString(),id).run();
+    }
+
+    if(b.discount_percent!==undefined){
+      const pct=Number(b.discount_percent);
+      if(!Number.isFinite(pct)||pct<0||pct>100){
+        return json({error:"Discount percent must be between 0 and 100."},400);
+      }
+      await env.DB.prepare(`
+        UPDATE menu_items SET discount_percent=?,updated_at=? WHERE id=?
+      `).bind(pct,new Date().toISOString(),id).run();
+    }
+
+    if(b.offer_enabled!==undefined){
+      await env.DB.prepare(`
+        UPDATE menu_items SET offer_enabled=?,updated_at=? WHERE id=?
+      `).bind(b.offer_enabled?1:0,new Date().toISOString(),id).run();
     }
 
     return json({ok:true,items:await publicMenu(env)});
@@ -867,6 +1038,74 @@ async function api(request,env,url){
         id:boy.id,name:boy.name,mobile:boy.mobile
       }
     });
+  }
+
+  if(url.pathname==="/api/push/public-key"&&request.method==="GET"){
+    const vapid=getVapid(env);
+    if(!vapid) return json({error:"Push notifications are not configured yet."},503);
+    return json({ok:true,public_key:vapid.publicKey});
+  }
+
+  if(url.pathname==="/api/push/subscribe"&&request.method==="POST"){
+    const adminAllowed=await authorized(request,env,"admin");
+    const deliveryAllowed=await authorized(request,env,"delivery");
+    if(!adminAllowed&&!deliveryAllowed) return json({error:"Unauthorized"},401);
+    let b; try{b=await request.json();}catch{return json({error:"Invalid JSON"},400);}
+    const sub=b?.subscription;
+    if(!sub?.endpoint||!sub?.keys?.p256dh||!sub?.keys?.auth) return json({error:"Invalid push subscription"},400);
+    if(!String(sub.endpoint).startsWith("https://")) return json({error:"Push endpoint must use HTTPS"},400);
+    const role=adminAllowed?"admin":"delivery";
+    const userId=role==="admin"?"ADMIN":await getDeliveryBoyId(request,env);
+    if(!userId) return json({error:"Delivery Boy not found"},401);
+    await ensurePushTables(env);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`
+      INSERT INTO push_subscriptions(id,role,user_id,endpoint,subscription_json,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(endpoint) DO UPDATE SET
+        role=excluded.role,user_id=excluded.user_id,subscription_json=excluded.subscription_json,updated_at=excluded.updated_at
+    `).bind(token(),role,String(userId),String(sub.endpoint),JSON.stringify(sub),now,now).run();
+    return json({ok:true,role,user_id:userId});
+  }
+
+  if(url.pathname==="/api/push/subscribe"&&request.method==="DELETE"){
+    const adminAllowed=await authorized(request,env,"admin");
+    const deliveryAllowed=await authorized(request,env,"delivery");
+    if(!adminAllowed&&!deliveryAllowed) return json({error:"Unauthorized"},401);
+    let b; try{b=await request.json();}catch{return json({error:"Invalid JSON"},400);}
+    if(!b?.endpoint) return json({error:"Endpoint required"},400);
+    await ensurePushTables(env);
+    await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint=?`).bind(String(b.endpoint)).run();
+    return json({ok:true});
+  }
+
+  if(url.pathname==="/api/notifications"&&request.method==="GET"){
+    const adminAllowed=await authorized(request,env,"admin");
+    const deliveryAllowed=await authorized(request,env,"delivery");
+    if(!adminAllowed&&!deliveryAllowed)return json({error:"Unauthorized"},401);
+    await ensureNotificationTables(env);
+    const since=String(url.searchParams.get("since")||"1970-01-01T00:00:00.000Z");
+    let rows;
+    if(deliveryAllowed&&!adminAllowed){
+      const boyId=await getDeliveryBoyId(request,env);
+      rows=await env.DB.prepare(`
+        SELECT * FROM notification_events
+        WHERE created_at>? AND delivery_boy_id=?
+        ORDER BY created_at ASC LIMIT 50
+      `).bind(since,boyId).all();
+    }else{
+      rows=await env.DB.prepare(`
+        SELECT * FROM notification_events
+        WHERE created_at>? ORDER BY created_at ASC LIMIT 50
+      `).bind(since).all();
+    }
+    return json({ok:true,events:rows.results,server_time:new Date().toISOString()});
+  }
+
+  if(url.pathname==="/api/push/test"&&request.method==="POST"){
+    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
+    const result=await pushAdmins(env,{title:"🔔 Classic Cafe Test Alert",body:"Push notification + vibration test successful.",url:"/admin",tag:"classic-cafe-test",requireInteraction:true,silent:false});
+    return json({ok:true,result});
   }
 
   if(url.pathname==="/api/health"&&request.method==="GET"){
@@ -1189,41 +1428,43 @@ async function api(request,env,url){
     }
 
     let food=0;
+    let discount=0;
+    const pricedItems=[];
 
     for(const x of items){
-      const p=Number(x.price);
       const q=Number(x.qty);
-
-      if(
-        !x.name||
-        !Number.isFinite(p)||
-        p<0||
-        !Number.isInteger(q)||
-        q<1||
-        q>50
-      ){
+      if(!x.name||!Number.isInteger(q)||q<1||q>50){
         return json({error:"Invalid item"},400);
       }
 
-      food+=p*q;
+      const original=Number(x.original_price??x.price);
+      const pct=Math.min(100,Math.max(0,Number(x.discount_percent)||0));
+      const discounted=Number(x.discount_price??x.price);
+      if(!Number.isFinite(original)||original<0||!Number.isFinite(discounted)||discounted<0){
+        return json({error:"Invalid item price"},400);
+      }
+      const lineOriginal=original*q;
+      const lineDiscount=Math.round((original-discounted)*q*100)/100;
+      food+=lineOriginal;
+      discount+=lineDiscount;
+      pricedItems.push({
+        name:String(x.name),
+        qty:q,
+        price:Math.round(discounted*100)/100,
+        original_price:Math.round(original*100)/100,
+        discount_price:Math.round(discounted*100)/100,
+        discount_percent:pct,
+        discount_amount:Math.round((original-discounted)*100)/100
+      });
     }
 
-    // 15% default offer, controlled from Admin.
-    let discount=0;
-    if(s.offer_enabled&&food>=s.offer_minimum&&s.offer_percent>0){
-      discount=Math.round(food*s.offer_percent)/100;
-      discount=Math.round(discount*100)/100;
-    }
-
-    const discountedFood=Math.max(0,food-discount);
+    discount=Math.round(discount*100)/100;
+    const discountedFood=Math.max(0,Math.round((food-discount)*100)/100);
     const delivery=Math.max(
       20,
-      Math.ceil(d)*(
-        Number(s.delivery_rate)||DEFAULT_RATE
-      )
+      Math.ceil(d)*(Number(s.delivery_rate)||DEFAULT_RATE)
     );
-
-    const grandTotal=discountedFood+delivery;
+    const grandTotal=Math.round((discountedFood+delivery)*100)/100;
 
     const id="CC"+Date.now().toString().slice(-8);
     const tracking_token=token();
@@ -1244,10 +1485,11 @@ async function api(request,env,url){
       "COD_OR_UPI_TO_DELIVERY_BOY",
       "UNPAID",
       "NEW",
-      JSON.stringify(items)
+      JSON.stringify(pricedItems)
     ).run();
 
-    // Add discount/offer information when the existing orders table supports it.
+    // Store order-level discount fields for backward compatibility.
+    // The authoritative per-item discounts are stored inside items_json.
     try{
       await env.DB.prepare(`
         ALTER TABLE orders ADD COLUMN discount REAL DEFAULT 0
@@ -1265,7 +1507,7 @@ async function api(request,env,url){
         UPDATE orders
         SET discount=?,offer_percent=?
         WHERE id=?
-      `).bind(discount,s.offer_percent,id).run();
+      `).bind(discount,0,id).run();
     }catch{}
 
     await env.DB.prepare(`
@@ -1275,6 +1517,22 @@ async function api(request,env,url){
 
     const assignment=await autoAssignOrder(env,id,lat,lng);
 
+    await createNotificationEvent(env,{
+      type:"NEW_ORDER",
+      orderId:id,
+      title:`🔔 New Classic Cafe Order ${id}`,
+      body:`${customer_name} · ₹${grandTotal}`
+    });
+    if(assignment?.assigned){
+      await createNotificationEvent(env,{
+        type:"ORDER_ASSIGNED",
+        orderId:id,
+        deliveryBoyId:assignment.delivery_boy_id,
+        title:`🛵 New Delivery Assigned ${id}`,
+        body:`${customer_name} · ₹${grandTotal}`
+      });
+    }
+
     return json({
       ok:true,
       order_id:id,
@@ -1283,7 +1541,7 @@ async function api(request,env,url){
       delivery_charge:delivery,
       food_total:food,
       discount,
-      offer_percent:s.offer_enabled?s.offer_percent:0,
+      offer_percent:0,
       grand_total:grandTotal,
       status:"NEW",
       assignment
@@ -1487,6 +1745,11 @@ async function api(request,env,url){
         delivery_boy_id=excluded.delivery_boy_id,
         assigned_at=excluded.assigned_at
     `).bind(orderId,boyId,now).run();
+    await createNotificationEvent(env,{
+      type:"ORDER_ASSIGNED",orderId,deliveryBoyId:boyId,
+      title:`🛵 Delivery Assigned ${orderId}`,
+      body:`A new Classic Cafe order has been assigned to you.`
+    });
 
     return json({
       ok:true,
@@ -1547,6 +1810,11 @@ async function api(request,env,url){
     `).bind(
       am[1],boyId,new Date().toISOString()
     ).run();
+    await createNotificationEvent(env,{
+      type:"ORDER_ASSIGNED",orderId:am[1],deliveryBoyId:boyId,
+      title:`🛵 Delivery Assigned ${am[1]}`,
+      body:`A new Classic Cafe order has been assigned to you.`
+    });
 
     return json({
       ok:true,
@@ -1597,6 +1865,16 @@ async function api(request,env,url){
       await env.DB.prepare(`
         UPDATE orders SET status=? WHERE id=?
       `).bind(b.status,om[1]).run();
+      const assigned=await env.DB.prepare(`
+        SELECT delivery_boy_id FROM delivery_assignments WHERE order_id=?
+      `).bind(om[1]).first();
+      await createNotificationEvent(env,{
+        type:"ORDER_STATUS",
+        orderId:om[1],
+        deliveryBoyId:assigned?.delivery_boy_id||null,
+        title:`📦 Order ${om[1]} → ${b.status}`,
+        body:`Classic Cafe order status updated`
+      });
     }
 
     if(b.payment_status&&adminAllowed){
@@ -1638,6 +1916,34 @@ async function api(request,env,url){
   return json({error:"Not found"},404);
 }
 
+const SW_SOURCE = `self.addEventListener("push", event => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch {}
+  const title = data.title || "Classic Cafe";
+  const options = {
+    body: data.body || "New Classic Cafe update",
+    icon: data.icon || "/icon-192.png",
+    badge: data.badge || "/icon-192.png",
+    tag: data.tag || "classic-cafe",
+    renotify: true,
+    requireInteraction: data.requireInteraction !== false,
+    silent: false,
+    vibrate: [300,120,300,120,600],
+    timestamp: Date.now(),
+    data: { url: data.url || "/admin" }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const url = event.notification.data && event.notification.data.url || "/admin";
+  event.waitUntil(self.clients.matchAll({type:"window",includeUncontrolled:true}).then(clients => {
+    const open = clients.find(c => c.url.includes(new URL(url,self.location.origin).pathname));
+    if(open) return open.focus();
+    return self.clients.openWindow(url);
+  }));
+});`;
+
 export default {
   async fetch(request,env){
     const url=new URL(request.url);
@@ -1654,24 +1960,26 @@ export default {
       }
     }
 
+    if(url.pathname==="/sw.js"){
+      return new Response(SW_SOURCE,{status:200,headers:{"content-type":"application/javascript; charset=utf-8","cache-control":"no-store"}});
+    }
+
     if(url.pathname==="/admin"||url.pathname==="/admin/"){
-      return env.ASSETS.fetch(
-        new Request(new URL("/admin.html",request.url),request)
-      );
+      if(env?.ASSETS&&typeof env.ASSETS.fetch==="function") return env.ASSETS.fetch(new Request(new URL("/admin.html",request.url),request));
+      return new Response("Admin asset unavailable",{status:503});
     }
 
     if(url.pathname==="/delivery"||url.pathname==="/delivery/"){
-      return env.ASSETS.fetch(
-        new Request(new URL("/delivery.html",request.url),request)
-      );
+      if(env?.ASSETS&&typeof env.ASSETS.fetch==="function") return env.ASSETS.fetch(new Request(new URL("/delivery.html",request.url),request));
+      return new Response("Delivery asset unavailable",{status:503});
     }
 
     if(url.pathname==="/track"||url.pathname==="/track/"){
-      return env.ASSETS.fetch(
-        new Request(new URL("/track.html",request.url),request)
-      );
+      if(env?.ASSETS&&typeof env.ASSETS.fetch==="function") return env.ASSETS.fetch(new Request(new URL("/track.html",request.url),request));
+      return new Response("Track asset unavailable",{status:503});
     }
 
-    return env.ASSETS.fetch(request);
+    if(env.ASSETS && typeof env.ASSETS.fetch==="function") return env.ASSETS.fetch(request);
+    return new Response("ASSETS binding is not configured.",{status:503});
   }
 };
