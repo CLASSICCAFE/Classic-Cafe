@@ -128,7 +128,7 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   </div>
 
   <div class="card">
-    <div class="row"><h3>🛵 Delivery Boys</h3><div class="controlActions"><button class="green" onclick="showAddBoy()">➕ Add Delivery Boy</button><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div></div><div id="boyForm" style="display:none;margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffdf9"><b>Register Delivery Boy</b><p class="small">पहले यहाँ नाम और registered 10-digit mobile number save करें। फिर Delivery Boy `/delivery` पर इसी mobile से OTP request करेगा।</p><div class="timeGrid"><input id="boyName" placeholder="Delivery Boy Name"><input id="boyMobile" inputmode="numeric" maxlength="10" placeholder="10-digit Mobile"><button class="green" onclick="addBoy()">💾 Register</button></div></div>
+    <div class="row"><h3>🛵 Delivery Boys</h3><div class="controlActions"><button class="green" onclick="showAddBoy()">➕ Add Delivery Boy</button><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div></div><div id="boyForm" style="display:none;margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffdf9"><b>Register Delivery Boy</b><p class="small">पहले यहाँ नाम और registered 10-digit mobile number save करें। फिर Delivery Boy `/delivery` पर इसी mobile से OTP request करेगा।</p><div class="timeGrid"><input id="boyName" placeholder="Delivery Boy Name"><input id="boyMobile" type="tel" inputmode="numeric" autocomplete="tel" maxlength="10" pattern="[0-9]{10}" placeholder="10-digit Mobile" aria-label="Delivery Boy 10 digit mobile number"><button class="green" onclick="addBoy()">💾 Register</button></div></div>
     <div id="boysList"></div>
   </div>
 
@@ -408,6 +408,15 @@ function showAddBoy(){
   const box=$('boyForm');
   box.style.display=box.style.display==='none'?'block':'none';
   if(box.style.display==='block') $('boyName').focus();
+}
+
+function setupMobileInput(){
+  const el=$('boyMobile');
+  if(!el || el.dataset.bound==='1') return;
+  el.dataset.bound='1';
+  const clean=()=>{ el.value=String(el.value||'').replace(/\\D/g,'').slice(0,10); };
+  el.addEventListener('input',clean);
+  el.addEventListener('paste',()=>setTimeout(clean,0));
 }
 
 async function addBoy(){
