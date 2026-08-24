@@ -1,0 +1,11 @@
+name = "classic-cafe-orders"
+main = "worker.js"
+compatibility_date = "2026-08-24"
+
+[assets]
+directory = "."
+
+[[d1_databases]]
+binding = "DB"
+database_name = "classic-cafe-orders"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
