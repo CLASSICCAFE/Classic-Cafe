@@ -1,39 +1,24 @@
-CLASSIC CAFE – V4 FINAL FIX
+CLASSIC CAFE – V5
+===================
 
-Replace these two files in the existing project:
-1. worker.js  -> Cloudflare Worker backend file
-2. admin.html -> public/admin asset file
+Replace only:
+1. worker.js  -> Cloudflare Worker backend
+2. admin.html -> public/admin asset
 
-DO NOT delete or reset the existing D1 database.
-DO NOT change ADMIN_KEY or DELIVERY_KEY secrets.
+Do NOT delete/reset the existing D1 database.
+Do NOT change ADMIN_KEY or DELIVERY_KEY.
 
-WHAT V4 FIXES
-- Delivery Boy registration now uses a schema-compatible dynamic INSERT, so older D1 versions with delivery_key/access_key are supported.
-- Delivery Boy flow: Admin registers name + 10-digit mobile -> Delivery Boy requests OTP -> Admin approves -> Delivery Boy verifies OTP -> dashboard login.
-- Registration errors now return a useful message instead of a generic Worker exception.
-- Admin dashboard no longer performs a full automatic refresh every 15 seconds.
-- Manual Refresh remains available.
-- A lightweight 5-second background watcher checks only for NEW orders; it does NOT reload the dashboard or reset form fields.
-- New order shows a top-of-dashboard detail card and can trigger browser notification + sound after Alerts permission is enabled.
-- Orders follow the controlled flow: NEW -> ACCEPTED -> PREPARING -> OUT_FOR_DELIVERY -> DELIVERED. Cancel is allowed before delivery.
-- Admin order cards show the complete customer/order/payment/delivery details and the current flow step.
-- Status history is stored in D1 without deleting existing orders.
-- Customer tracking API now returns current status, readable status label, location and status history.
-- Delivery Boy location updates continue to move the order to OUT_FOR_DELIVERY when appropriate.
-- Admin Notifications / Alerts and Delivery Boy notifications are preserved.
-- Menu / Item Availability and Offer controls are preserved.
-- Every existing D1 record is preserved; no DROP/TRUNCATE/reset is used.
+V5 changes:
+- Delivery Boy mobile field is explicitly a telephone field (not a password field) and sanitizes input.
+- Delivery Boy registration continues to support legacy D1 schemas containing delivery_key/access_key.
+- Admin dashboard does not perform a full page refresh on a timer.
+- Background NEW-order watcher does not reload the page or reset forms.
+- Menu availability and offer controls remain included.
+- Notifications/Alerts and order-flow controls remain included.
+- Added admin-only delivery schema diagnostic endpoint: /api/admin/delivery/schema.
 
-DEPLOY
-1. Replace worker.js and admin.html only.
-2. Commit the changes.
-3. Wait for a green Cloudflare build/deployment.
-4. Open /admin and press the manual Refresh button once.
-5. Press 🔔 Alerts once and allow browser notifications.
-6. Test Delivery Boys -> Add Delivery Boy with a real 10-digit mobile.
-7. On /delivery request OTP using that registered mobile.
-8. In Admin -> Delivery OTP Approval, approve it.
-9. Verify OTP on the Delivery dashboard.
+IMPORTANT ABOUT CHROME WARNING
+The "Check your passwords / deceptive site" popup shown by Chrome is a Chrome Safe Browsing/security warning, not a JavaScript validation error. HTML changes cannot guarantee removal of that warning. Do not enter real passwords into a page Chrome identifies as deceptive. If the warning persists on the workers.dev domain, verify the Cloudflare deployment/domain and Safe Browsing status before using sensitive credentials.
 
-NOTE
-The background order watcher is intentionally not a page refresh. It only checks for new orders so an alert can appear without disturbing typing, menu edits, or other dashboard work.
+Deploy order:
+Commit -> successful build/deploy -> open the current site -> hard refresh once.
