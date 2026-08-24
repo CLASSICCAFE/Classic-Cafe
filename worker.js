@@ -322,11 +322,9 @@ async function adminSessionValid(request,env){
     await ensureCoreTables(env);
     const s=getCookie(request,"classic_admin_session");
     if(!s) return false;
-    const row = await env.DB.prepare(`
-  SELECT token FROM admin_sessions
-  WHERE token = ? AND expires_at > ?
-  LIMIT 1
-`).bind(s, new Date().toISOString()).first();
+    const row = await env.DB.prepare(
+  "SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ? LIMIT 1"
+).bind(s, new Date().toISOString()).first();
     return !!row;
   }catch{
     return false;
