@@ -371,7 +371,17 @@ async function ensureDeliveryTables(env){
     }
   }catch{}
 
-  if(env.DELIVERY_KEY){
+  // Remove only the old placeholder Delivery Boy rows created by early builds.
+  // Real manually registered boys always have a mobile number and are preserved.
+  try{
+    await env.DB.prepare(`
+      DELETE FROM delivery_boys
+      WHERE (mobile IS NULL OR TRIM(mobile)='')
+        AND lower(name) IN ('delivery boy 1','delivery boy 2','delivery boy 3')
+    `).run();
+  }catch{}
+
+  if(false && env.DELIVERY_KEY){
     const cols=await tableColumns(env,"delivery_boys");
 
     // IMPORTANT: older databases may already contain DB001 with a legacy
@@ -587,7 +597,13 @@ async function publicMenu(env){
     SELECT id,name,category,available,offer_text,updated_at
     FROM menu_items ORDER BY category,name
   `).all();
-  return rows.results.map(x=>({...x,available:Number(x.available)===1,offer_text:String(x.offer_text||''),hidden:false}));
+  return rows.results.map(x=>({
+    ...x,
+    available:Number(x.available)===1,
+    offer_text:String(x.offer_text||''),
+    offer:String(x.offer_text||''),
+    hidden:false
+  }));
 }
 
 async function checkItemsAvailable(env,items){
