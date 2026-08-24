@@ -128,7 +128,7 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   </div>
 
   <div class="card">
-    <div class="row"><h3>🛵 Delivery Boys</h3><div class="controlActions"><button class="green" onclick="showAddBoy()">➕ Add Delivery Boy</button><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div></div><div id="boyForm" style="display:none;margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffdf9"><b>Register Delivery Boy</b><p class="small">पहले यहाँ नाम और registered 10-digit mobile number save करें। फिर Delivery Boy `/delivery` पर इसी mobile से OTP request करेगा।</p><div class="timeGrid"><input id="boyName" placeholder="Delivery Boy Name"><input id="boyMobile" type="tel" inputmode="numeric" autocomplete="tel" maxlength="10" pattern="[0-9]{10}" placeholder="10-digit Mobile" aria-label="Delivery Boy 10 digit mobile number"><button class="green" onclick="addBoy()">💾 Register</button></div></div>
+    <div class="row"><h3>🛵 Delivery Boys</h3><div class="controlActions"><button class="green" onclick="showAddBoy()">➕ Add Delivery Boy</button><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div></div><div id="boyForm" style="display:none;margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffdf9"><b>Register Delivery Boy</b><p class="small">पहले यहाँ नाम और registered 10-digit mobile number save करें। फिर Delivery Boy `/delivery` पर इसी mobile से OTP request करेगा।</p><div class="timeGrid"><input id="boyName" placeholder="Delivery Boy Name"><input id="boyMobile" type="tel" inputmode="numeric" autocomplete="tel" autocapitalize="off" spellcheck="false" data-lpignore="true" maxlength="10" pattern="[0-9]{10}" placeholder="10-digit Mobile" aria-label="Delivery Boy 10 digit mobile number"><button class="green" onclick="addBoy()">💾 Register</button></div></div>
     <div id="boysList"></div>
   </div>
 
@@ -204,7 +204,8 @@ function adminKeyDialog(){
       <div style="background:#fff;border-radius:18px;padding:20px;max-width:420px;width:100%;box-shadow:0 10px 40px #0005">
         <h2 style="margin-top:0">🔐 Admin Login</h2>
         <p>पहली बार Admin Dashboard खोलने के लिए अपना <b>ADMIN_KEY</b> डालें।</p>
-        <input id="adminKeyInput" type="password" placeholder="Enter ADMIN_KEY"
+        <input id="adminKeyInput" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true"
+          placeholder="Enter ADMIN_KEY" aria-label="Admin Key"
           style="width:100%;padding:13px;border:1px solid #ddd;border-radius:10px;font-size:16px">
         <div style="display:flex;gap:10px;margin-top:12px">
           <button id="adminKeyCancel" style="flex:1;padding:12px;border:0;border-radius:10px;background:#ddd">Cancel</button>
