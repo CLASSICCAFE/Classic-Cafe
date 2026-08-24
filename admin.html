@@ -42,7 +42,7 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   <div class="header">
     <div class="logo">☕ Classic Cafe<small>Owner Admin Dashboard · Secure Session</small></div>
     <div class="controlActions">
-      <button class="gold" onclick="loadAll()">🔄 Refresh</button><button class="green" onclick="enableAlerts()">🔔 Enable Alerts</button>
+      <button class="gold" onclick="loadAll()">🔄 Refresh</button>
       <button onclick="logout()">🔒 Logout</button>
     </div>
   </div>
@@ -94,11 +94,11 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   <div class="card">
     <h3>🕐 Online Ordering Time</h3>
     <div class="timeGrid">
-      <div><label class="small">Opening</label><input id="openingTime" type="time" value="11:00"></div>
+      <div><label class="small">Opening</label><input id="openingTime" type="time" value="12:00"></div>
       <div><label class="small">Closing</label><input id="closingTime" type="time" value="00:00"></div>
       <button class="orange" onclick="saveTiming()">💾 Save Timing</button>
     </div>
-    <p class="small">Example: 11:00 AM → 12:00 AM. Closing time can cross midnight.</p>
+    <p class="small">Example: 12:00 PM → 12:00 AM. Closing time can cross midnight.</p>
   </div>
 
   <div class="card">
@@ -323,15 +323,6 @@ function statusButtons(o){
   </div>`;
 }
 
-
-function assignmentBox(o){
-  const opts=['<option value="">Select Delivery Boy</option>'].concat((window.BOYS||[]).map(b=>`<option value="${esc(b.id)}" ${b.id===o.delivery_boy_id?'selected':''}>${esc(b.name)} (${esc(b.mobile||'')})</option>`));
-  return `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><select id="assign-${esc(o.id)}" style="padding:9px;border-radius:10px;border:1px solid #ddd;min-width:220px">${opts.join('')}</select><button class="orange" onclick="assignOrder('${esc(o.id)}')">🛵 Assign / Change</button></div>`;
-}
-async function assignOrder(id){const el=document.getElementById('assign-'+id);if(!el||!el.value)return alert('Delivery Boy select karein.');try{await api('/api/orders/'+encodeURIComponent(id)+'/assign',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({delivery_boy_id:el.value})});await loadOrders();}catch(e){showError(e.message)}}
-function beep(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C)return;const c=new C(),o=c.createOscillator(),g=c.createGain();o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(c.destination);o.start();setTimeout(()=>{o.stop();c.close()},350)}catch{}}
-function enableAlerts(){if(!('Notification' in window)){alert('Browser notifications supported nahi hain.');return}Notification.requestPermission().then(p=>{if(p==='granted'){try{navigator.serviceWorker.register('/sw.js')}catch{};alert('🔔 Admin alerts enabled. Phone/browser notification permission ON rakhein.')}})}
-let lastAdminIds=new Set();let firstAdminLoad=true;function notifyAdmin(orders){const fresh=orders.filter(o=>o.status==='NEW'&&!lastAdminIds.has(o.id));if(!firstAdminLoad&&fresh.length){beep();try{navigator.vibrate?.([300,100,300,100,600]);}catch{};if(Notification.permission==='granted'){fresh.forEach(o=>new Notification('🔔 New Classic Cafe Order',{body:`${o.id} · ${o.customer_name} · ₹${o.grand_total}`,tag:'order-'+o.id}))}};lastAdminIds=new Set(orders.map(o=>o.id));firstAdminLoad=false}
 async function loadOrders(){
   try{
     const d=await api('/api/orders'); ORDERS=d.orders||[];
@@ -339,14 +330,13 @@ async function loadOrders(){
       const items=(o.items||[]).map(i=>`<div>🍽️ ${esc(i.name)} × <b>${esc(i.qty)}</b></div>`).join('');
       return `<div class="order">
         <div class="orderHead"><div class="orderId">${esc(o.id)}</div><span class="status">${esc(o.status)}</span></div>
-        <p>👤 <b>${esc(o.customer_name)}</b><br>📱 <a href="tel:${esc(o.mobile)}">${esc(o.mobile)}</a><br>📍 ${esc(o.address)}<br>📏 ${Number(o.distance_km||0).toFixed(2)} KM<br>🚴 Delivery Boy: <b>${esc(o.delivery_boy_id||'Not Assigned')}</b></p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><a class="green" style="padding:9px 12px;border-radius:10px;text-decoration:none" href="tel:${esc(o.mobile)}">📞 Call</a><a class="gold" style="padding:9px 12px;border-radius:10px;text-decoration:none" target="_blank" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.lat||'')},${encodeURIComponent(o.lng||'')}">🗺️ Customer Location</a><a class="gold" style="padding:9px 12px;border-radius:10px;text-decoration:none" target="_blank" href="/track?token=${encodeURIComponent(o.tracking_token||'')}">🔗 Track</a></div>
+        <p>👤 <b>${esc(o.customer_name)}</b><br>📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}<br>🚴 Delivery Boy: <b>${esc(o.delivery_boy_id||'Not Assigned')}</b></p>
         <div class="items">${items||'No items'}</div>
         <p>💰 Food ₹${Number(o.food_total||0)} + Delivery ₹${Number(o.delivery_charge||0)} = <b>₹${Number(o.grand_total||0)}</b><br>
         💳 ${esc(o.payment_status||'UNPAID')}</p>
         ${statusButtons(o)}
-      </div>${assignmentBox(o)}`;
+      </div>`;
     }).join('')||'<div class="empty">📭 No orders.</div>';
-    notifyAdmin(ORDERS);
     updateStats();
   }catch(e){showError(e.message)}
 }
