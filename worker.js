@@ -182,6 +182,7 @@ async function ensureCoreTables(env){
       name TEXT NOT NULL UNIQUE,
       category TEXT,
       available INTEGER DEFAULT 1,
+      offer_text TEXT DEFAULT '',
       updated_at TEXT NOT NULL
     )
   `).run();
@@ -231,13 +232,10 @@ async function getSettings(env){
 }
 
 async function ensureDeliveryTables(env){
-  // Keep this migration backward-compatible with older delivery_boys schemas.
-  // The old code accidentally used a non-existent delivery_key column, which
-  // caused EVERY /api request to fail before the requested endpoint ran.
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_boys(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,mobile TEXT,
-      access_key TEXT UNIQUE NOT NULL,active INTEGER DEFAULT 1,created_at TEXT NOT NULL
+      access_key TEXT UNIQUE,delivery_key TEXT,active INTEGER DEFAULT 1,created_at TEXT NOT NULL
     )
   `).run();
 
@@ -272,6 +270,7 @@ async function ensureDeliveryTables(env){
     name:"TEXT",
     mobile:"TEXT",
     access_key:"TEXT",
+    delivery_key:"TEXT",
     active:"INTEGER DEFAULT 1",
     created_at:"TEXT"
   });
@@ -290,18 +289,31 @@ async function ensureDeliveryTables(env){
     created_at:"TEXT"
   });
 
+  // Compatibility: older versions used delivery_key instead of access_key.
+  try{
+    const cols=await tableColumns(env,"delivery_boys");
+    if(cols.has("delivery_key") && cols.has("access_key")){
+      await env.DB.prepare(`
+        UPDATE delivery_boys
+        SET access_key=delivery_key
+        WHERE (access_key IS NULL OR access_key='') AND delivery_key IS NOT NULL AND delivery_key<>''
+      `).run();
+    }
+  }catch{}
+
   if(env.DELIVERY_KEY){
     const x=await env.DB.prepare(`
       SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1
     `).bind(env.DELIVERY_KEY).first();
     if(!x){
       await env.DB.prepare(`
-        INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
-        VALUES(?,?,?,?,?,?)
+        INSERT INTO delivery_boys(id,name,mobile,access_key,delivery_key,active,created_at)
+        VALUES(?,?,?,?,?,?,?)
       `).bind(
         "DB001",
         "Delivery Boy 1",
         "",
+        env.DELIVERY_KEY,
         env.DELIVERY_KEY,
         1,
         new Date().toISOString()
@@ -452,10 +464,10 @@ async function autoAssignOrder(env,orderId,lat,lng){
 async function publicMenu(env){
   await ensureCoreTables(env);
   const rows=await env.DB.prepare(`
-    SELECT id,name,category,available,updated_at
+    SELECT id,name,category,available,offer_text,updated_at
     FROM menu_items ORDER BY category,name
   `).all();
-  return rows.results.map(x=>({...x,available:Number(x.available)===1,hidden:false}));
+  return rows.results.map(x=>({...x,available:Number(x.available)===1,offer_text:String(x.offer_text||''),hidden:false}));
 }
 
 async function checkItemsAvailable(env,items){
@@ -480,7 +492,6 @@ async function api(request,env,url){
   // Initialize/upgrade required D1 tables on first API request.
   // Safe for existing data: CREATE IF NOT EXISTS + missing-column upgrades only.
   await ensureCoreTables(env);
-  await ensureDeliveryTables(env);
 
   // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
@@ -545,12 +556,13 @@ async function api(request,env,url){
     if(!name) return json({error:"Item name required"},400);
     const id=String(b.id||("MENU-"+token().slice(0,12)));
     const available=b.available===undefined?true:!!b.available;
+    const offerText=String(b.offer_text??"").trim().slice(0,120);
     await env.DB.prepare(`
-      INSERT INTO menu_items(id,name,category,available,updated_at)
-      VALUES(?,?,?,?,?)
+      INSERT INTO menu_items(id,name,category,available,offer_text,updated_at)
+      VALUES(?,?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET
-        category=excluded.category,available=excluded.available,updated_at=excluded.updated_at
-    `).bind(id,name,category,available?1:0,new Date().toISOString()).run();
+        category=excluded.category,available=excluded.available,offer_text=excluded.offer_text,updated_at=excluded.updated_at
+    `).bind(id,name,category,available?1:0,offerText,new Date().toISOString()).run();
     return json({ok:true,items:await publicMenu(env)});
   }
 
@@ -598,6 +610,10 @@ async function api(request,env,url){
     if(b.category!==undefined){
       await env.DB.prepare(`UPDATE menu_items SET category=?,updated_at=? WHERE id=?`)
         .bind(String(b.category||""),new Date().toISOString(),id).run();
+    }
+    if(b.offer_text!==undefined){
+      await env.DB.prepare(`UPDATE menu_items SET offer_text=?,updated_at=? WHERE id=?`)
+        .bind(String(b.offer_text||"").trim().slice(0,120),new Date().toISOString(),id).run();
     }
     return json({ok:true,items:await publicMenu(env)});
   }
@@ -755,9 +771,13 @@ async function api(request,env,url){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
     await ensureDeliveryTables(env);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
-    const name=String(b.name||"").trim(), mobile=String(b.mobile||"").trim(), accessKey=String(b.access_key||"").trim();
-    if(!name||!accessKey) return json({error:"Name and Delivery Key are required."},400);
-    if(mobile&&!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
+    const name=String(b.name||"").trim();
+    const mobile=String(b.mobile||"").trim();
+    const accessKey=String(b.access_key||token()).trim();
+    if(!name) return json({error:"Delivery Boy name is required."},400);
+    if(!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
+    const existingMobile=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE mobile=? LIMIT 1`).bind(mobile).first();
+    if(existingMobile) return json({error:"This mobile number is already registered as a Delivery Boy."},409);
     const ex=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=?`).bind(accessKey).first();
     if(ex) return json({error:"This Delivery Key is already in use."},409);
     const rows=await env.DB.prepare(`SELECT id FROM delivery_boys ORDER BY id DESC`).all();
@@ -769,13 +789,14 @@ async function api(request,env,url){
     const id="DB"+String(n).padStart(3,"0");
     await env.DB.prepare(`
       INSERT INTO delivery_boys(
-        id,name,mobile,access_key,active,created_at
+        id,name,mobile,access_key,delivery_key,active,created_at
       )
-      VALUES(?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?)
     `).bind(
       id,
       name,
       mobile,
+      accessKey,
       accessKey,
       1,
       new Date().toISOString()
