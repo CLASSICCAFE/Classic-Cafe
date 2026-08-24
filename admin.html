@@ -31,7 +31,7 @@ input,select{border:1px solid #ddd;background:#fff;width:100%}
 .items{background:#fff;border:1px solid #eee;border-radius:12px;padding:10px;margin-top:10px;line-height:1.7}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.actions button{font-size:12px;padding:9px 10px}
 .notice{padding:12px;border-radius:12px;background:#fff3d9;margin-bottom:12px}.error{padding:10px;border-radius:10px;background:#ffe4e4;color:#b42318;margin-top:10px}
 .empty{text-align:center;padding:30px;color:#777}.alertItem{border:1px solid var(--line);border-radius:14px;padding:12px;margin:9px 0;background:#fffdf9}.alertItem.unread{border-left:5px solid var(--orange);background:#fff7e8}.alertDot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--red);margin-right:6px}.menuTop{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}.offerRow{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}
-.small{font-size:12px;color:#777}.liveBanner{border:2px solid var(--orange);background:#fff3d9}.toast{position:fixed;right:14px;bottom:14px;z-index:9999;max-width:360px;padding:14px 16px;border-radius:14px;background:#241311;color:#fff;box-shadow:0 10px 30px #0005}.orderFlow{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.flowStep{padding:5px 8px;border-radius:12px;background:#f2e7dc;font-size:11px;font-weight:800}.flowStep.active{background:#168447;color:#fff}
+.small{font-size:12px;color:#777}.liveBanner{border:2px solid var(--orange);background:#fff3d9}.newOrderModal{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px}.newOrderBox{width:min(560px,96vw);max-height:90vh;overflow:auto;background:#fff9f1;border:4px solid var(--orange);border-radius:22px;padding:20px;box-shadow:0 20px 70px #0009;animation:newOrderPulse 1s infinite alternate}.newOrderTitle{font-size:24px;font-weight:900;color:var(--red)}@keyframes newOrderPulse{from{transform:scale(1)}to{transform:scale(1.015)}}.toast{position:fixed;right:14px;bottom:14px;z-index:9999;max-width:360px;padding:14px 16px;border-radius:14px;background:#241311;color:#fff;box-shadow:0 10px 30px #0005}.orderFlow{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.flowStep{padding:5px 8px;border-radius:12px;background:#f2e7dc;font-size:11px;font-weight:800}.flowStep.active{background:#168447;color:#fff}
 footer{text-align:center;padding:28px;color:#777;font-size:13px}
 @media(max-width:900px){.stats{grid-template-columns:repeat(3,1fr)}.shopControl{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){main{padding:10px}.stats{grid-template-columns:repeat(2,1fr)}.shopControl,.menuGrid,.timeGrid{grid-template-columns:1fr}.stat b{font-size:22px}}
@@ -151,7 +151,8 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const $=id=>document.getElementById(id);
 
 async function enableAlerts(){
-  try{
+  try{ unlockAudio(); if(navigator.vibrate) navigator.vibrate([120,80,120]);
+    try{ if('serviceWorker' in navigator) await navigator.serviceWorker.register('/sw.js'); }catch{}
     if('Notification' in window){
       const permission=await Notification.requestPermission();
       if(permission==='granted') showToast('🔔 Browser alerts enabled. New orders will notify you.');
@@ -166,27 +167,61 @@ function showToast(msg){
   setTimeout(()=>el.remove(),5000);
 }
 
-function beep(){
+function unlockAudio(){
   try{
     audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended') audioCtx.resume();
     const o=audioCtx.createOscillator(),g=audioCtx.createGain();
-    o.frequency.value=880; g.gain.value=.06; o.connect(g);g.connect(audioCtx.destination);o.start();
-    setTimeout(()=>{o.frequency.value=660},160);setTimeout(()=>o.stop(),320);
+    g.gain.value=.0001;o.frequency.value=440;o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+.03);
   }catch{}
 }
 
+function beep(){
+  try{
+    unlockAudio(); if(!audioCtx || audioCtx.state==='suspended') return;
+    const now=audioCtx.currentTime;
+    [0,.22,.44].forEach((t,i)=>{
+      const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+      o.type='sine';o.frequency.value=i===1?660:880;
+      g.gain.setValueAtTime(.0001,now+t);g.gain.exponentialRampToValueAtTime(.12,now+t+.02);g.gain.exponentialRampToValueAtTime(.0001,now+t+.18);
+      o.connect(g);g.connect(audioCtx.destination);o.start(now+t);o.stop(now+t+.2);
+    });
+  }catch{}
+}
+
+function vibrateAlert(){try{if(navigator.vibrate)navigator.vibrate([300,120,300,120,700]);}catch{}}
+
 function browserAlert(title,body){
-  showToast(title+' — '+body); beep();
-  try{if('Notification' in window && Notification.permission==='granted') new Notification(title,{body,tag:'classic-cafe-'+Date.now(),requireInteraction:true});}catch{}
+  showToast(title+' — '+body); beep(); vibrateAlert();
+  try{if('Notification' in window && Notification.permission==='granted') new Notification(title,{body,tag:'classic-cafe-new-order',requireInteraction:true,silent:false});}catch{}
+}
+
+function closeNewOrderModal(){
+  const m=document.getElementById('newOrderModal'); if(m)m.remove();
+  try{if(navigator.vibrate)navigator.vibrate(0);}catch{}
 }
 
 function renderLiveOrder(o){
-  if(!o){$('liveOrderBanner').style.display='none';return;}
+  if(!o){$('liveOrderBanner').style.display='none';closeNewOrderModal();return;}
   const items=(o.items||[]).map(i=>`${esc(i.name)} × ${esc(i.qty)}`).join(' · ');
-  $('liveOrderBanner').style.display='block';
-  $('liveOrderBanner').className='card liveBanner';
-  $('liveOrderBanner').innerHTML=`<div class="row"><div><h3 style="margin:0">🆕 New Order ${esc(o.id)}</h3><div class="small">${esc(o.created_at||'')}</div></div><span class="badge warn">₹${Number(o.grand_total||0)}</span></div><p style="margin-bottom:8px">👤 <b>${esc(o.customer_name)}</b> · 📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}<br>🍽️ ${items||'No items'}<br>💳 ${esc(o.payment_status||'UNPAID')} · 🚴 ${esc(o.delivery_boy_id||'Not assigned')}</p><div class="controlActions"><button class="green" onclick="setStatus('${esc(o.id)}','ACCEPTED')">👍 Accept Order</button><button onclick="document.getElementById('orders').scrollIntoView({behavior:'smooth'})">📦 Open Order</button></div>`;
+  $('liveOrderBanner').style.display='none';
+  let old=document.getElementById('newOrderModal');if(old)old.remove();
+  const m=document.createElement('div');m.id='newOrderModal';m.className='newOrderModal';
+  m.innerHTML=`<div class="newOrderBox" role="dialog" aria-modal="true">
+    <div class="newOrderTitle">🔔 🆕 NEW ORDER RECEIVED</div>
+    <div class="row" style="margin-top:8px"><b>${esc(o.id)}</b><span class="badge warn">₹${Number(o.grand_total||0)}</span></div><hr>
+    <p>👤 <b>${esc(o.customer_name)}</b><br>📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}</p>
+    <div class="items">🍽️ <b>Order Details</b><br>${items||'No items'}</div>
+    <p>💳 ${esc(o.payment_status||'UNPAID')} · 🚴 ${esc(o.delivery_boy_id||'Not assigned')}</p>
+    <div class="controlActions" style="margin-top:16px"><button class="green" style="font-size:18px;flex:1" onclick="acceptNewOrder('${esc(o.id)}')">✅ ACCEPT ORDER</button><button style="font-size:16px" onclick="openNewOrderDetail('${esc(o.id)}')">📦 View Order</button></div>
+  </div>`;
+  document.body.appendChild(m); beep(); vibrateAlert();
 }
+
+async function acceptNewOrder(id){
+  try{await setStatus(id,'ACCEPTED');closeNewOrderModal();await loadOrders();const el=document.getElementById('order-'+id);if(el)el.scrollIntoView({behavior:'smooth',block:'center'});}catch(e){showError(e.message)}
+}
+function openNewOrderDetail(id){closeNewOrderModal();const el=document.getElementById('order-'+id);if(el)el.scrollIntoView({behavior:'smooth',block:'center'});}
 
 function showError(msg){
   $('errorBox').innerHTML=msg?`<div class="error">❌ ${esc(msg)}</div>`:'';
@@ -464,7 +499,7 @@ async function loadOrders(){
     const d=await api('/api/orders'); ORDERS=d.orders||[];
     $('orders').innerHTML=ORDERS.map(o=>{
       const items=(o.items||[]).map(i=>`<div>🍽️ ${esc(i.name)} × <b>${esc(i.qty)}</b></div>`).join('');
-      return `<div class="order">
+      return `<div id="order-${esc(o.id)}" class="order">
         <div class="orderHead"><div class="orderId">${esc(o.id)}</div><span class="status">${esc(o.status)}</span></div>
         <p>👤 <b>${esc(o.customer_name)}</b><br>📱 ${esc(o.mobile)}<br>📍 ${esc(o.address)}<br>🚴 Delivery Boy: <b>${esc(o.delivery_boy_id||'Not Assigned')}</b></p>
         <div class="items">${items||'No items'}</div>
@@ -517,6 +552,7 @@ async function checkForNewOrders(){
     if(fresh.length){
       const o=fresh[0];
       browserAlert('🆕 Classic Cafe — New Order',`${o.id} · ${o.customer_name} · ₹${Number(o.grand_total||0)}`);
+      renderLiveOrder(o);
       await Promise.all([loadOrders(),loadNotifications()]);
     }
   }catch(e){
@@ -532,6 +568,8 @@ function startAlertWatcher(){
   // updates the order/alert cards when a new order exists.
   setInterval(checkForNewOrders,5000);
 }
+
+document.addEventListener('pointerdown',()=>{try{unlockAudio()}catch{}},{once:true});
 
 async function loadAll(){
   showError('');
