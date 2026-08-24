@@ -893,7 +893,7 @@ async function api(request,env,url){
     await ensureDeliveryTables(env);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
     const name=String(b.name||"").trim();
-    const mobile=String(b.mobile||"").trim();
+    const mobile=String(b.mobile||"").replace(/\\D/g,"").slice(0,10);
     if(!name) return json({error:"Delivery Boy name is required."},400);
     if(!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
 
@@ -932,7 +932,7 @@ async function api(request,env,url){
       await env.DB.prepare(`INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`).bind(...values).run();
     }catch(error){
       console.error('DELIVERY BOY REGISTER ERROR:',error?.stack||error);
-      return json({error:"Delivery Boy register nahi ho paya.",detail:String(error?.message||error)},500);
+      return json({error:"Delivery Boy register nahi ho paya. D1 schema check required.",detail:String(error?.message||error)},500);
     }
     return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
@@ -956,6 +956,13 @@ async function api(request,env,url){
     const row=await env.DB.prepare(`SELECT id,name,mobile,active FROM delivery_boys WHERE id=?`).bind(id).first();
     if(!row) return json({error:"Delivery Boy not found"},404);
     return json({ok:true,delivery_boy:row});
+  }
+
+  // Delivery registration diagnostics (Admin only)
+  if(url.pathname==="/api/admin/delivery/schema" && request.method==="GET"){
+    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
+    await ensureDeliveryTables(env);
+    return json({ok:true,columns:[...await tableColumns(env,"delivery_boys")]});
   }
 
   // Delivery stats
