@@ -112,7 +112,7 @@ footer{text-align:center;padding:28px;color:#777;font-size:13px}
   </div>
 
   <div class="card">
-    <div class="row"><h3>🛵 Delivery Boys</h3><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div>
+    <div class="row"><h3>🛵 Delivery Boys</h3><div class="controlActions"><button class="green" onclick="showAddBoy()">➕ Add Delivery Boy</button><button class="gold" onclick="loadBoys()">🔄 Refresh</button></div></div><div id="boyForm" style="display:none;margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:#fffdf9"><b>Register Delivery Boy</b><p class="small">पहले यहाँ नाम और registered 10-digit mobile number save करें। फिर Delivery Boy `/delivery` पर इसी mobile से OTP request करेगा।</p><div class="timeGrid"><input id="boyName" placeholder="Delivery Boy Name"><input id="boyMobile" inputmode="numeric" maxlength="10" placeholder="10-digit Mobile"><button class="green" onclick="addBoy()">💾 Register</button></div></div>
     <div id="boysList"></div>
   </div>
 
@@ -262,9 +262,14 @@ async function loadMenu(){
       return `<div class="menuItem">
         <div class="row"><b>${esc(i.name)}</b><span class="badge ${available?'ok':'bad'}">${available?'🟢 AVAILABLE':'🔴 SOLD OUT'}</span></div>
         <div class="small">${esc(i.category||'')}</div>
+        <label class="small">🏷️ Offer</label>
+        <div class="controlActions">
+          <input id="offer-${esc(i.id)}" value="${esc(i.offer_text||'')}" placeholder="e.g. 15% OFF / Combo Offer" maxlength="120">
+          <button class="orange" onclick="saveOffer('${esc(i.id)}')">💾 Save Offer</button>
+        </div>
         <div class="controlActions">
           <button class="green" onclick="setItem('${esc(i.id)}','available')">🟢 Available</button>
-          <button class="red" onclick="setItem('${esc(i.id)}','soldout')">🔴 No Available</button>
+          <button class="red" onclick="setItem('${esc(i.id)}','soldout')">🔴 Sold Out</button>
         </div>
       </div>`;
     }).join('')||'<div class="empty">No menu items.</div>';
@@ -280,13 +285,23 @@ async function setItem(id,state){
   }catch(e){showError(e.message)}
 }
 
+async function saveOffer(id){
+  try{
+    const el=$('offer-'+id);
+    await api('/api/admin/menu/'+encodeURIComponent(id),{
+      method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({offer_text:el?el.value.trim():''})
+    });
+    await loadMenu();
+  }catch(e){showError(e.message)}
+}
+
 async function loadOtp(){
   try{
     const d=await api('/api/admin/delivery/otp');
     $('otpList').innerHTML=(d.requests||[]).map(x=>`
       <div class="card">
         <b>${esc(x.name||'Delivery Boy')}</b><br>
-        📱 ${esc(x.mobile)} · Request: ${esc(x.created_at||'')}
+        📱 ${esc(x.mobile)} · Request: ${esc(x.created_at||'')}<br>🔢 OTP: <b>${esc(x.otp||'—')}</b>
         <div class="controlActions">
           <button class="green" onclick="approveOtp('${esc(x.id)}')">✅ Approve Login</button>
         </div>
@@ -297,6 +312,28 @@ async function loadOtp(){
 async function approveOtp(id){
   try{await api('/api/admin/delivery/otp/'+encodeURIComponent(id)+'/approve',{method:'PUT'});await loadOtp();}
   catch(e){showError(e.message)}
+}
+
+function showAddBoy(){
+  const box=$('boyForm');
+  box.style.display=box.style.display==='none'?'block':'none';
+  if(box.style.display==='block') $('boyName').focus();
+}
+
+async function addBoy(){
+  try{
+    const name=$('boyName').value.trim();
+    const mobile=$('boyMobile').value.trim();
+    if(!name) return showError('Delivery Boy name डालें।');
+    if(!/^[0-9]{10}$/.test(mobile)) return showError('10 digit mobile number डालें।');
+    const d=await api('/api/delivery/boys',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({name,mobile})
+    });
+    $('boyName').value='';$('boyMobile').value='';$('boyForm').style.display='none';
+    await loadBoys();
+    alert('Delivery Boy '+(d.delivery_boy?.id||'')+' registered successfully. अब वह /delivery पर registered mobile से OTP request कर सकता है.');
+  }catch(e){showError(e.message)}
 }
 
 async function loadBoys(){
