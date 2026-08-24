@@ -295,7 +295,15 @@ async function ensureDeliveryTables(env){
       await env.DB.prepare(`
         INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
         VALUES(?,?,?,?,?,?)
-      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
+      ).bind(
+  "DB001",
+  "Delivery Boy 1",
+  "",
+  env.DELIVERY_KEY,
+  env.DELIVERY_KEY,
+  1,
+  new Date().toISOString()
+).run();
     }
   }
 }
