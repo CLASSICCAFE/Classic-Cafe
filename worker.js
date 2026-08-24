@@ -187,6 +187,15 @@ async function ensureCoreTables(env){
     )
   `).run();
 
+  // Upgrade older menu_items tables safely. Older deployments may not have offer_text.
+  await addMissingColumns(env,"menu_items",{
+    name:"TEXT",
+    category:"TEXT",
+    available:"INTEGER DEFAULT 1",
+    offer_text:"TEXT DEFAULT ''",
+    updated_at:"TEXT"
+  });
+
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS admin_sessions(
       token TEXT PRIMARY KEY,
@@ -211,7 +220,51 @@ async function ensureCoreTables(env){
     `).bind(x[0],x[1],x[2],1,new Date().toISOString()).run();
   }
 
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS notifications(
+      id TEXT PRIMARY KEY,
+      target_type TEXT NOT NULL,
+      target_id TEXT,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      order_id TEXT,
+      read INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+  await addMissingColumns(env,"notifications",{
+    target_type:"TEXT", target_id:"TEXT", kind:"TEXT", title:"TEXT", body:"TEXT",
+    order_id:"TEXT", read:"INTEGER DEFAULT 0", created_at:"TEXT"
+  });
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_notifications_target ON notifications(target_type,target_id,read,created_at)`).run();
+
   await ensureOrdersTables(env);
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS order_status_history(
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      changed_by TEXT DEFAULT 'SYSTEM',
+      created_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_id,created_at)`).run();
+}
+
+async function notify(env,{target_type,target_id=null,kind,title,body,order_id=null}){
+  try{
+    const id=crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO notifications(id,target_type,target_id,kind,title,body,order_id,read,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?)
+    `).bind(id,target_type,target_id,kind,title,body,order_id,0,new Date().toISOString()).run();
+    return id;
+  }catch(error){
+    console.error('NOTIFICATION ERROR:',error?.message||error);
+    return null;
+  }
 }
 
 async function getSettings(env){
@@ -232,45 +285,53 @@ async function getSettings(env){
 }
 
 async function ensureDeliveryTables(env){
+  // Keep this migration deliberately conservative. Older deployments may have
+  // delivery_key, access_key, or both. We never drop or rename existing data.
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_boys(
-      id TEXT PRIMARY KEY,name TEXT NOT NULL,mobile TEXT,
-      access_key TEXT UNIQUE,delivery_key TEXT,active INTEGER DEFAULT 1,created_at TEXT NOT NULL
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      mobile TEXT,
+      access_key TEXT UNIQUE,
+      active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
     )
   `).run();
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_assignments(
-      order_id TEXT PRIMARY KEY,delivery_boy_id TEXT NOT NULL,assigned_at TEXT NOT NULL
+      order_id TEXT PRIMARY KEY,
+      delivery_boy_id TEXT NOT NULL,
+      assigned_at TEXT NOT NULL
     )
   `).run();
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_otp_requests(
-      id TEXT PRIMARY KEY,mobile TEXT NOT NULL,otp TEXT NOT NULL,
-      delivery_boy_id TEXT,approved INTEGER DEFAULT 0,used INTEGER DEFAULT 0,
-      expires_at TEXT NOT NULL,created_at TEXT NOT NULL
+      id TEXT PRIMARY KEY,
+      mobile TEXT NOT NULL,
+      otp TEXT NOT NULL,
+      delivery_boy_id TEXT,
+      approved INTEGER DEFAULT 0,
+      used INTEGER DEFAULT 0,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
     )
-  `).run();
-
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_delivery_otp_mobile
-    ON delivery_otp_requests(mobile)
   `).run();
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS delivery_sessions(
-      token TEXT PRIMARY KEY,delivery_boy_id TEXT NOT NULL,
-      expires_at TEXT NOT NULL,created_at TEXT NOT NULL
+      token TEXT PRIMARY KEY,
+      delivery_boy_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
     )
   `).run();
 
-  // Upgrade older D1 schemas without destroying existing data.
   await addMissingColumns(env,"delivery_boys",{
     name:"TEXT",
     mobile:"TEXT",
     access_key:"TEXT",
-    delivery_key:"TEXT",
     active:"INTEGER DEFAULT 1",
     created_at:"TEXT"
   });
@@ -289,35 +350,35 @@ async function ensureDeliveryTables(env){
     created_at:"TEXT"
   });
 
-  // Compatibility: older versions used delivery_key instead of access_key.
+  // Some previous versions stored the login key in delivery_key. Copy it
+  // only when both columns actually exist.
   try{
     const cols=await tableColumns(env,"delivery_boys");
     if(cols.has("delivery_key") && cols.has("access_key")){
       await env.DB.prepare(`
         UPDATE delivery_boys
         SET access_key=delivery_key
-        WHERE (access_key IS NULL OR access_key='') AND delivery_key IS NOT NULL AND delivery_key<>''
+        WHERE (access_key IS NULL OR access_key='')
+          AND delivery_key IS NOT NULL AND delivery_key<>''
       `).run();
     }
   }catch{}
 
   if(env.DELIVERY_KEY){
-    const x=await env.DB.prepare(`
-      SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1
-    `).bind(env.DELIVERY_KEY).first();
+    const x=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1`)
+      .bind(env.DELIVERY_KEY).first();
     if(!x){
-      await env.DB.prepare(`
-        INSERT INTO delivery_boys(id,name,mobile,access_key,delivery_key,active,created_at)
-        VALUES(?,?,?,?,?,?,?)
-      `).bind(
-        "DB001",
-        "Delivery Boy 1",
-        "",
-        env.DELIVERY_KEY,
-        env.DELIVERY_KEY,
-        1,
-        new Date().toISOString()
-      ).run();
+      const cols=await tableColumns(env,"delivery_boys");
+      const fields=["id","name","mobile","access_key","active","created_at"];
+      const values=["DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()];
+      // Preserve compatibility if an old schema has delivery_key as a required column.
+      if(cols.has("delivery_key")){
+        fields.splice(4,0,"delivery_key");
+        values.splice(4,0,env.DELIVERY_KEY);
+      }
+      const placeholders=fields.map(()=>'?').join(',');
+      await env.DB.prepare(`INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`)
+        .bind(...values).run();
     }
   }
 }
@@ -641,6 +702,12 @@ async function api(request,env,url){
       VALUES(?,?,?,?,?,?,?,?)
     `).bind(id,mobile,otp,boy.id,0,0,expires,now.toISOString()).run();
 
+    await notify(env,{
+      target_type:'ADMIN',kind:'DELIVERY_OTP',title:'🔐 Delivery Boy OTP Request',
+      body:`${boy.name||'Delivery Boy'} (${mobile}) requested login approval. OTP: ${otp}`,
+      target_id:null
+    });
+
     return json({
       ok:true,
       message:"OTP request created. Admin verification required.",
@@ -705,6 +772,60 @@ async function api(request,env,url){
     await env.DB.prepare(`UPDATE delivery_otp_requests SET used=1 WHERE id=?`).bind(row.id).run();
 
     return json({ok:true,message:"Delivery Boy login successful.",session_token:session,expires_at:exp,delivery_boy:{id:boy.id,name:boy.name,mobile:boy.mobile}});
+  }
+
+  // Admin notifications / alerts
+  if(url.pathname==="/api/admin/notifications" && request.method==="GET"){
+    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
+    const limit=Math.min(Math.max(Number(url.searchParams.get("limit")||50),1),100);
+    const rows=await env.DB.prepare(`
+      SELECT id,kind,title,body,order_id,read,created_at
+      FROM notifications WHERE target_type='ADMIN'
+      ORDER BY created_at DESC LIMIT ?
+    `).bind(limit).all();
+    const unread=await env.DB.prepare(`SELECT COUNT(*) AS n FROM notifications WHERE target_type='ADMIN' AND read=0`).first();
+    return json({ok:true,notifications:rows.results,unread:Number(unread?.n||0)});
+  }
+
+  if(url.pathname==="/api/admin/notifications/read" && request.method==="PUT"){
+    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
+    let b={}; try{b=await request.json()}catch{}
+    if(b.all===true){
+      await env.DB.prepare(`UPDATE notifications SET read=1 WHERE target_type='ADMIN'`).run();
+    }else if(b.id){
+      await env.DB.prepare(`UPDATE notifications SET read=1 WHERE id=? AND target_type='ADMIN'`).bind(String(b.id)).run();
+    }else{
+      return json({error:"Notification id or all=true is required."},400);
+    }
+    return json({ok:true});
+  }
+
+  // Delivery Boy notifications / alerts
+  if(url.pathname==="/api/delivery/notifications" && request.method==="GET"){
+    if(!await authorized(request,env,"delivery")) return json({error:"Unauthorized"},401);
+    const boyId=await getDeliveryBoyId(request,env);
+    if(!boyId) return json({error:"Delivery Boy not found"},401);
+    const limit=Math.min(Math.max(Number(url.searchParams.get("limit")||50),1),100);
+    const rows=await env.DB.prepare(`
+      SELECT id,kind,title,body,order_id,read,created_at
+      FROM notifications WHERE target_type='DELIVERY' AND target_id=?
+      ORDER BY created_at DESC LIMIT ?
+    `).bind(boyId,limit).all();
+    const unread=await env.DB.prepare(`SELECT COUNT(*) AS n FROM notifications WHERE target_type='DELIVERY' AND target_id=? AND read=0`).bind(boyId).first();
+    return json({ok:true,notifications:rows.results,unread:Number(unread?.n||0)});
+  }
+
+  if(url.pathname==="/api/delivery/notifications/read" && request.method==="PUT"){
+    if(!await authorized(request,env,"delivery")) return json({error:"Unauthorized"},401);
+    const boyId=await getDeliveryBoyId(request,env);
+    if(!boyId) return json({error:"Delivery Boy not found"},401);
+    let b={}; try{b=await request.json()}catch{}
+    if(b.all===true){
+      await env.DB.prepare(`UPDATE notifications SET read=1 WHERE target_type='DELIVERY' AND target_id=?`).bind(boyId).run();
+    }else if(b.id){
+      await env.DB.prepare(`UPDATE notifications SET read=1 WHERE id=? AND target_type='DELIVERY' AND target_id=?`).bind(String(b.id),boyId).run();
+    }else return json({error:"Notification id or all=true is required."},400);
+    return json({ok:true});
   }
 
   if(url.pathname==="/api/health" && request.method==="GET"){
@@ -773,34 +894,46 @@ async function api(request,env,url){
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
     const name=String(b.name||"").trim();
     const mobile=String(b.mobile||"").trim();
-    const accessKey=String(b.access_key||token()).trim();
     if(!name) return json({error:"Delivery Boy name is required."},400);
     if(!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
-    const existingMobile=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE mobile=? LIMIT 1`).bind(mobile).first();
+
+    const existingMobile=await env.DB.prepare(`
+      SELECT id FROM delivery_boys
+      WHERE replace(replace(replace(COALESCE(mobile,''),' ',''),'-',''),'+91','')=?
+      LIMIT 1
+    `).bind(mobile).first();
     if(existingMobile) return json({error:"This mobile number is already registered as a Delivery Boy."},409);
-    const ex=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=?`).bind(accessKey).first();
-    if(ex) return json({error:"This Delivery Key is already in use."},409);
+
+    const cols=await tableColumns(env,"delivery_boys");
+    const accessKey=String(b.access_key||token()).trim();
+    if(cols.has("access_key")){
+      const ex=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1`).bind(accessKey).first();
+      if(ex) return json({error:"This Delivery Key is already in use. Please try again."},409);
+    }
+
     const rows=await env.DB.prepare(`SELECT id FROM delivery_boys ORDER BY id DESC`).all();
     let n=1;
-    if(rows.results.length){
-      const last=Number(String(rows.results[0].id).replace("DB",""));
-      if(Number.isFinite(last)) n=last+1;
+    for(const r of (rows.results||[])){
+      const m=String(r.id||'').match(/^DB(\d+)$/i);
+      if(m){ n=Math.max(n,Number(m[1])+1); break; }
     }
     const id="DB"+String(n).padStart(3,"0");
-    await env.DB.prepare(`
-      INSERT INTO delivery_boys(
-        id,name,mobile,access_key,delivery_key,active,created_at
-      )
-      VALUES(?,?,?,?,?,?,?)
-    `).bind(
-      id,
-      name,
-      mobile,
-      accessKey,
-      accessKey,
-      1,
-      new Date().toISOString()
-    ).run();
+    const now=new Date().toISOString();
+    const fields=[]; const values=[];
+    const put=(field,value)=>{if(cols.has(field)){fields.push(field);values.push(value)}};
+    put('id',id); put('name',name); put('mobile',mobile); put('access_key',accessKey);
+    // Older builds may still have delivery_key; populate it when present.
+    put('delivery_key',accessKey); put('active',1); put('created_at',now);
+    if(!fields.includes('id')||!fields.includes('name')||!fields.includes('mobile')){
+      return json({error:"Delivery Boy table is missing required columns. Please deploy the latest worker once."},500);
+    }
+    const placeholders=fields.map(()=>'?').join(',');
+    try{
+      await env.DB.prepare(`INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`).bind(...values).run();
+    }catch(error){
+      console.error('DELIVERY BOY REGISTER ERROR:',error?.stack||error);
+      return json({error:"Delivery Boy register nahi ho paya.",detail:String(error?.message||error)},500);
+    }
     return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
 
@@ -883,7 +1016,21 @@ async function api(request,env,url){
       delivery,food,food+delivery,"COD_OR_UPI_TO_DELIVERY_BOY","UNPAID","NEW",JSON.stringify(items)).run();
 
     await env.DB.prepare(`INSERT INTO order_tracking(order_id,tracking_token) VALUES(?,?)`).bind(id,tracking_token).run();
+    await env.DB.prepare(`INSERT INTO order_status_history(id,order_id,status,changed_by,created_at) VALUES(?,?,?,?,?)`)
+      .bind(crypto.randomUUID(),id,'NEW','CUSTOMER',now).run();
     const assignment=await autoAssignOrder(env,id,lat,lng);
+
+    await notify(env,{
+      target_type:'ADMIN',kind:'NEW_ORDER',title:'🆕 New Order Received',
+      body:`Order ${id} from ${customer_name} · Total ₹${food+delivery}`,order_id:id
+    });
+    if(assignment.assigned){
+      await notify(env,{
+        target_type:'DELIVERY',target_id:assignment.delivery_boy_id,kind:'NEW_ORDER',
+        title:'🛵 New Delivery Order',
+        body:`Order ${id} assigned to you · Collect ₹${food+delivery}`,order_id:id
+      });
+    }
 
     return json({ok:true,order_id:id,tracking_token,distance_km:Number(d.toFixed(2)),
       delivery_charge:delivery,food_total:food,grand_total:food+delivery,status:"NEW",assignment});
@@ -928,17 +1075,20 @@ async function api(request,env,url){
   const tm=url.pathname.match(/^\/api\/track\/([^/]+)$/);
   if(tm&&request.method==="GET"){
     const row=await env.DB.prepare(`
-      SELECT o.id,o.created_at,o.customer_name,o.status,o.food_total,o.delivery_charge,
-             o.grand_total,o.distance_km,t.lat,t.lng,t.updated_at
+      SELECT o.id,o.created_at,o.customer_name,o.mobile,o.address,o.status,o.food_total,o.delivery_charge,
+             o.grand_total,o.distance_km,t.lat,t.lng,t.updated_at,t.tracking_token
       FROM orders o JOIN order_tracking t ON t.order_id=o.id
       WHERE t.tracking_token=?
     `).bind(tm[1]).first();
     if(!row) return json({error:"Tracking link invalid or expired"},404);
+    const history=await env.DB.prepare(`SELECT status,changed_by,created_at FROM order_status_history WHERE order_id=? ORDER BY created_at ASC`).bind(row.id).all();
+    const labels={NEW:'Order Received',ACCEPTED:'Accepted by Cafe',PREPARING:'Preparing',OUT_FOR_DELIVERY:'Out for Delivery',DELIVERED:'Delivered',CANCELLED:'Cancelled'};
     return json({ok:true,order:{
       id:row.id,created_at:row.created_at,customer_name:row.customer_name,status:row.status,
-      food_total:row.food_total,delivery_charge:row.delivery_charge,grand_total:row.grand_total,
+      status_label:labels[row.status]||row.status,food_total:row.food_total,delivery_charge:row.delivery_charge,grand_total:row.grand_total,
       distance_km:row.distance_km,
-      location:row.lat!=null?{lat:row.lat,lng:row.lng,updated_at:row.updated_at}:null
+      location:row.lat!=null?{lat:row.lat,lng:row.lng,updated_at:row.updated_at}:null,
+      history:(history.results||[]).map(x=>({...x,label:labels[x.status]||x.status}))
     }});
   }
 
@@ -988,6 +1138,7 @@ async function api(request,env,url){
       INSERT INTO delivery_assignments(order_id,delivery_boy_id,assigned_at) VALUES(?,?,?)
       ON CONFLICT(order_id) DO UPDATE SET delivery_boy_id=excluded.delivery_boy_id,assigned_at=excluded.assigned_at
     `).bind(orderId,boyId,now).run();
+    await notify(env,{target_type:'DELIVERY',target_id:boyId,kind:'ASSIGNMENT',title:'🛵 New Order Assigned',body:`Order ${orderId} has been assigned to you.`,order_id:orderId});
     return json({ok:true,message:"Order assigned successfully.",order_id:orderId,delivery_boy_id:boyId,delivery_boy_name:boy.name,assigned_at:now});
   }
 
@@ -1008,6 +1159,7 @@ async function api(request,env,url){
       INSERT INTO delivery_assignments(order_id,delivery_boy_id,assigned_at) VALUES(?,?,?)
       ON CONFLICT(order_id) DO UPDATE SET delivery_boy_id=excluded.delivery_boy_id,assigned_at=excluded.assigned_at
     `).bind(am[1],boyId,new Date().toISOString()).run();
+    await notify(env,{target_type:'DELIVERY',target_id:boyId,kind:'ASSIGNMENT',title:'🛵 New Order Assigned',body:`Order ${am[1]} has been assigned to you.`,order_id:am[1]});
     return json({ok:true,message:"Delivery Boy assigned successfully.",order_id:am[1],delivery_boy:boy});
   }
 
@@ -1029,7 +1181,30 @@ async function api(request,env,url){
       if(!a) return json({error:"This order is not assigned to you."},403);
     }
 
-    if(b.status) await env.DB.prepare(`UPDATE orders SET status=? WHERE id=?`).bind(b.status,om[1]).run();
+    if(b.status){
+      const current=await env.DB.prepare(`SELECT status FROM orders WHERE id=?`).bind(om[1]).first();
+      if(!current) return json({error:"Order not found"},404);
+      const transitions={
+        NEW:['ACCEPTED','CANCELLED'],
+        ACCEPTED:['PREPARING','CANCELLED'],
+        PREPARING:['OUT_FOR_DELIVERY','CANCELLED'],
+        OUT_FOR_DELIVERY:['DELIVERED','CANCELLED'],
+        DELIVERED:[],
+        CANCELLED:[]
+      };
+      if(b.status!==current.status && !transitions[String(current.status)]?.includes(String(b.status))){
+        return json({error:`Order ${om[1]} cannot change from ${current.status} to ${b.status}. Follow: Accept → Preparing → Out for Delivery → Delivered.`},409);
+      }
+      await env.DB.prepare(`UPDATE orders SET status=? WHERE id=?`).bind(b.status,om[1]).run();
+      await env.DB.prepare(`INSERT INTO order_status_history(id,order_id,status,changed_by,created_at) VALUES(?,?,?,?,?)`)
+        .bind(crypto.randomUUID(),om[1],b.status,deliveryAllowed&&!adminAllowed?'DELIVERY_BOY':'ADMIN',new Date().toISOString()).run();
+      const label={ACCEPTED:'Accepted',PREPARING:'Preparing',OUT_FOR_DELIVERY:'Out for Delivery',DELIVERED:'Delivered',CANCELLED:'Cancelled'}[b.status]||b.status;
+      await notify(env,{target_type:'ADMIN',kind:'ORDER_STATUS',title:`📦 ${label}`,body:`Order ${om[1]} is now ${label}.`,order_id:om[1]});
+      const assigned=await env.DB.prepare(`SELECT delivery_boy_id FROM delivery_assignments WHERE order_id=?`).bind(om[1]).first();
+      if(assigned?.delivery_boy_id){
+        await notify(env,{target_type:'DELIVERY',target_id:assigned.delivery_boy_id,kind:'ORDER_STATUS',title:`📦 Order ${om[1]} Updated`,body:`Status: ${label}`,order_id:om[1]});
+      }
+    }
 
     if(b.payment_status&&adminAllowed){
       if(!["UNPAID","PAID"].includes(b.payment_status)) return json({error:"Invalid payment status"},400);
