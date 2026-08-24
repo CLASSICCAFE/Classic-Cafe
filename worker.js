@@ -250,7 +250,14 @@ async function ensureCoreTables(env){
       created_at TEXT NOT NULL
     )
   `).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_id,created_at)`).run();
+  await addMissingColumns(env,"order_status_history",{
+    order_id:"TEXT", status:"TEXT", changed_by:"TEXT DEFAULT 'SYSTEM'", created_at:"TEXT"
+  });
+  try{
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_order_status_history_order ON order_status_history(order_id,created_at)`).run();
+  }catch(error){
+    console.error('STATUS HISTORY INDEX ERROR:',error?.message||error);
+  }
 }
 
 async function notify(env,{target_type,target_id=null,kind,title,body,order_id=null}){
@@ -549,10 +556,6 @@ async function checkItemsAvailable(env,items){
 
 async function api(request,env,url){
   if(request.method==="OPTIONS") return new Response(null,{status:204,headers:corsHeaders()});
-
-  // Initialize/upgrade required D1 tables on first API request.
-  // Safe for existing data: CREATE IF NOT EXISTS + missing-column upgrades only.
-  await ensureCoreTables(env);
 
   // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
@@ -1045,6 +1048,8 @@ async function api(request,env,url){
 
   // Get orders
   if(url.pathname==="/api/orders" && request.method==="GET"){
+    await ensureCoreTables(env);
+    await ensureDeliveryTables(env);
     const adminAllowed=await authorized(request,env,"admin");
     const deliveryAllowed=await authorized(request,env,"delivery");
     if(!adminAllowed&&!deliveryAllowed) return json({error:"Unauthorized"},401);
