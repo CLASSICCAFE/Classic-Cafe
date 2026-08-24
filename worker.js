@@ -761,10 +761,10 @@ async function api(request,env,url){
       if(Number.isFinite(last)) n=last+1;
     }
     const id="DB"+String(n).padStart(3,"0");
-    await env.DB.prepare(`
-      INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
-      VALUES(?,?,?,?,?,?)
-    `).bind(id,name,mobile,accessKey,1,new Date().toISOString()).run();
+    await env.DB.prepare(
+  `INSERT INTO delivery_boys(id,name,mobile,delivery_key,access_key,active,created_at)
+   VALUES(?,?,?,?,?,?,?)`
+).bind(id,name,mobile,accessKey,accessKey,1,new Date().toISOString()).run();
     return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
 
