@@ -272,7 +272,7 @@ async function api(path,options={}){
     try{d=await r.json()}catch{}
   }
 
-  if(!r.ok) throw new Error(d.error||`Request failed (${r.status})`);
+  if(!r.ok) throw new Error(d.detail ? `${d.error||`Request failed (${r.status})`} — ${d.detail}` : (d.error||`Request failed (${r.status})`));
   return d;
 }
 
@@ -415,7 +415,7 @@ function setupMobileInput(){
   const el=$('boyMobile');
   if(!el || el.dataset.bound==='1') return;
   el.dataset.bound='1';
-  const clean=()=>{ el.value=String(el.value||'').replace(/\\D/g,'').slice(0,10); };
+  const clean=()=>{ el.value=String(el.value||'').replace(/\D/g,'').slice(0,10); };
   el.addEventListener('input',clean);
   el.addEventListener('paste',()=>setTimeout(clean,0));
 }
