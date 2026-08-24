@@ -1,15 +1,18 @@
-CLASSIC CAFE - ADMIN BUTTON FIX
+CLASSIC CAFE ADMIN FIX v2
 
-Files in this ZIP:
-1. worker.js  -> replace the current Worker code/file
-2. admin.html -> replace the current Admin HTML file
+Replace:
+1. worker.js -> your Worker backend file
+2. admin.html -> your Admin dashboard asset
 
-IMPORTANT:
-- Do NOT change ADMIN_KEY or DELIVERY_KEY.
-- Keep the existing D1 binding named DB.
-- Deploy/commit these files after replacing them.
+Important:
+- Do NOT delete or reset the D1 database.
+- Do NOT change ADMIN_KEY or DELIVERY_KEY secrets.
+- Commit and deploy after replacement.
+- Hard refresh / clear cache after deployment.
 
-Main fix:
-The previous Worker had a delivery_boys INSERT mismatch (delivery_key was used even though the table uses access_key). Because ensureDeliveryTables runs before API routes, this could make every Admin API button show "Worker exception.".
-
-The fixed worker uses only access_key and keeps old D1 data through safe migrations.
+Features fixed:
+- Prevents delivery-table initialization from breaking every API request.
+- Delivery Boy registration from Admin using name + 10-digit mobile.
+- Delivery Boy OTP request/approval flow remains supported.
+- Menu item offer text field with Save Offer.
+- Existing D1 menu/delivery schemas are migrated safely.
