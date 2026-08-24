@@ -1,19 +1,15 @@
-Classic Cafe Fixed v7
+Classic Cafe Admin alert update
 
-This build is based on v6.
+This version adds:
+- Full-screen new-order popup over the dashboard.
+- New order popup stays until Admin accepts or opens the order.
+- Accept Order closes popup and scrolls directly to that order.
+- Sound + vibration alert when a new order is detected.
+- Android/browser Notification support when Alerts permission is enabled.
+- Audio is unlocked after the Admin taps Alerts (and first page interaction).
+- Dashboard remains manual-refresh; background polling only checks for new orders.
 
-Changes:
-- Admin API errors now show the server detail instead of only generic "Worker exception", so the exact D1 error is visible.
-- Delivery Boy mobile input uses a true digit-cleaning regex and tel/inputmode attributes.
-- Existing v6 features remain: manual dashboard refresh, background new-order watcher without page reload, notifications, menu availability/offers, order flow.
-
-Important:
-The Chrome "Check your passwords / deceptive site" popup is a Chrome Safe Browsing/password-manager warning, not an application popup. It cannot be guaranteed to disappear by JavaScript changes. If it appears, do not enter passwords on an untrusted site; for this cafe site, verify the domain and HTTPS certificate before continuing.
-
-
-V8 FIX:
-- Fixed the exact D1 PRIMARY KEY collision on delivery_boys.id (DB001).
-- Existing DB001 is reused/updated instead of being inserted again.
-- New Delivery Boy IDs are calculated from all existing DB### rows.
-- Registration retries safely if two requests choose the same ID.
-- Legacy delivery_key schemas remain supported.
+Important browser limitation:
+A normal web page cannot guarantee sound/vibration while the Android phone is fully locked.
+For reliable lock-screen alerts, browser push notifications (VAPID/push subscription) must be configured.
+This version registers /sw.js and uses persistent browser notifications where supported, but does not invent a push-server credential.
