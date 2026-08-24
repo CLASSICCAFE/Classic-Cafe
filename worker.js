@@ -3,8 +3,8 @@ const CAFE_LNG = 72.964081;
 
 const DEFAULT_RATE = 20;
 const DEFAULT_RADIUS = 5;
-const DEFAULT_START = "11:00";
-const DEFAULT_END = "23:50";
+const DEFAULT_START = "12:00";
+const DEFAULT_END = "00:00";
 const DEFAULT_ASSIGN_DISTANCE = 2;
 
 function json(data, status=200){
