@@ -1,4 +1,4 @@
-name = "classic-cafe-orders"
+name = "classic-cafe"
 main = "worker.js"
 compatibility_date = "2026-08-24"
 
@@ -8,4 +8,4 @@ directory = "."
 [[d1_databases]]
 binding = "DB"
 database_name = "classic-cafe-orders"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "d880a60e-d779-44bd-8ad3-40b845f3bf18"
