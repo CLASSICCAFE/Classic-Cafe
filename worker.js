@@ -372,20 +372,72 @@ async function ensureDeliveryTables(env){
   }catch{}
 
   if(env.DELIVERY_KEY){
-    const x=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1`)
-      .bind(env.DELIVERY_KEY).first();
-    if(!x){
-      const cols=await tableColumns(env,"delivery_boys");
+    const cols=await tableColumns(env,"delivery_boys");
+
+    // IMPORTANT: older databases may already contain DB001 with a legacy
+    // delivery_key. Never try to INSERT DB001 again just because the
+    // access_key value is different; that causes PRIMARY KEY collisions.
+    const existingId=await env.DB.prepare(
+      `SELECT id FROM delivery_boys WHERE id='DB001' LIMIT 1`
+    ).first();
+
+    if(existingId){
+      try{
+        if(cols.has("access_key")){
+          await env.DB.prepare(
+            `UPDATE delivery_boys SET access_key=? WHERE id='DB001'`
+          ).bind(env.DELIVERY_KEY).run();
+        }
+        if(cols.has("delivery_key")){
+          await env.DB.prepare(
+            `UPDATE delivery_boys SET delivery_key=? WHERE id='DB001'`
+          ).bind(env.DELIVERY_KEY).run();
+        }
+        if(cols.has("active")){
+          await env.DB.prepare(
+            `UPDATE delivery_boys SET active=1 WHERE id='DB001'`
+          ).run();
+        }
+      }catch(error){
+        console.error("DELIVERY BOY DEFAULT KEY UPDATE ERROR:",error?.stack||error);
+      }
+    }else{
       const fields=["id","name","mobile","access_key","active","created_at"];
       const values=["DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()];
-      // Preserve compatibility if an old schema has delivery_key as a required column.
+
+      // Preserve compatibility if an old schema has delivery_key as a
+      // required/legacy column.
       if(cols.has("delivery_key")){
         fields.splice(4,0,"delivery_key");
         values.splice(4,0,env.DELIVERY_KEY);
       }
+
       const placeholders=fields.map(()=>'?').join(',');
-      await env.DB.prepare(`INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`)
-        .bind(...values).run();
+      try{
+        await env.DB.prepare(
+          `INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`
+        ).bind(...values).run();
+      }catch(error){
+        // Another request can initialize DB001 at the same time. If it now
+        // exists, do not turn a harmless race into a Worker exception.
+        const msg=String(error?.message||"");
+        if(/UNIQUE constraint failed:\s*delivery_boys\.id|PRIMARY KEY/i.test(msg)){
+          try{
+            if(cols.has("access_key")){
+              await env.DB.prepare(
+                `UPDATE delivery_boys SET access_key=? WHERE id='DB001'`
+              ).bind(env.DELIVERY_KEY).run();
+            }
+            if(cols.has("delivery_key")){
+              await env.DB.prepare(
+                `UPDATE delivery_boys SET delivery_key=? WHERE id='DB001'`
+              ).bind(env.DELIVERY_KEY).run();
+            }
+          }catch{}
+        }else{
+          throw error;
+        }
+      }
     }
   }
 }
@@ -914,30 +966,63 @@ async function api(request,env,url){
       if(ex) return json({error:"This Delivery Key is already in use. Please try again."},409);
     }
 
-    const rows=await env.DB.prepare(`SELECT id FROM delivery_boys ORDER BY id DESC`).all();
+    // Find the next free DB### id from ALL existing rows. Do not rely on
+    // lexical ORDER BY because legacy IDs may be mixed with other values.
+    const rows=await env.DB.prepare(`SELECT id FROM delivery_boys`).all();
     let n=1;
     for(const r of (rows.results||[])){
       const m=String(r.id||'').match(/^DB(\d+)$/i);
-      if(m){ n=Math.max(n,Number(m[1])+1); break; }
+      if(m){
+        const num=Number(m[1]);
+        if(Number.isFinite(num)) n=Math.max(n,num+1);
+      }
     }
-    const id="DB"+String(n).padStart(3,"0");
+
     const now=new Date().toISOString();
-    const fields=[]; const values=[];
-    const put=(field,value)=>{if(cols.has(field)){fields.push(field);values.push(value)}};
-    put('id',id); put('name',name); put('mobile',mobile); put('access_key',accessKey);
-    // Older builds may still have delivery_key; populate it when present.
-    put('delivery_key',accessKey); put('active',1); put('created_at',now);
-    if(!fields.includes('id')||!fields.includes('name')||!fields.includes('mobile')){
-      return json({error:"Delivery Boy table is missing required columns. Please deploy the latest worker once."},500);
+    let registeredId=null;
+
+    // Small retry loop protects against two Admin taps/requests happening
+    // at nearly the same time.
+    for(let attempt=0;attempt<5;attempt++){
+      let id="DB"+String(n+attempt).padStart(3,"0");
+      const collision=await env.DB.prepare(
+        `SELECT id FROM delivery_boys WHERE id=? LIMIT 1`
+      ).bind(id).first();
+      if(collision) continue;
+
+      const fields=[]; const values=[];
+      const put=(field,value)=>{if(cols.has(field)){fields.push(field);values.push(value)}};
+      put('id',id); put('name',name); put('mobile',mobile); put('access_key',accessKey);
+      // Older builds may still have delivery_key; populate it when present.
+      put('delivery_key',accessKey); put('active',1); put('created_at',now);
+
+      if(!fields.includes('id')||!fields.includes('name')||!fields.includes('mobile')){
+        return json({error:"Delivery Boy table is missing required columns. Please deploy the latest worker once."},500);
+      }
+
+      const placeholders=fields.map(()=>'?').join(',');
+      try{
+        await env.DB.prepare(
+          `INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`
+        ).bind(...values).run();
+        registeredId=id;
+        break;
+      }catch(error){
+        const msg=String(error?.message||"");
+        if(!/UNIQUE constraint failed:\s*delivery_boys\.id|PRIMARY KEY/i.test(msg)){
+          console.error('DELIVERY BOY REGISTER ERROR:',error?.stack||error);
+          return json({error:"Delivery Boy register nahi ho paya.",detail:msg},500);
+        }
+      }
     }
-    const placeholders=fields.map(()=>'?').join(',');
-    try{
-      await env.DB.prepare(`INSERT INTO delivery_boys(${fields.join(',')}) VALUES(${placeholders})`).bind(...values).run();
-    }catch(error){
-      console.error('DELIVERY BOY REGISTER ERROR:',error?.stack||error);
-      return json({error:"Delivery Boy register nahi ho paya. D1 schema check required.",detail:String(error?.message||error)},500);
+
+    if(!registeredId){
+      return json({
+        error:"Delivery Boy ID generate nahi ho paya. Please tap Register once again."
+      },409);
     }
-    return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
+
+    return json({ok:true,delivery_boy:{id:registeredId,name,mobile,active:1}});
   }
 
   const boyMatch=url.pathname.match(/^\/api\/delivery\/boys\/([^/]+)$/);
