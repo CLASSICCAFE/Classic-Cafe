@@ -1,0 +1,33 @@
+CLASSIC CAFE – FINAL GITHUB PUSH + OFFERS UPDATE
+
+FILES
+- worker.js: existing Worker + per-item offers + push subscription/send logic
+- index.html: customer menu reads live /api/menu and shows original price, discounted price and % OFF
+- admin.html: enable screen-off alerts + test notification
+- delivery.html: enable screen-off alerts for the logged-in delivery boy
+- sw.js: service worker that receives push in background and shows notification with vibration
+- package.json: @mmmike/web-push (Cloudflare/edge-compatible Web Push library)
+
+IMPORTANT SECRETS (Cloudflare Worker Secrets, NOT GitHub)
+VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY
+VAPID_SUBJECT (example: mailto:owner@example.com)
+
+Generate VAPID keys with:
+npx @mmmike/web-push generate-vapid-keys
+
+Then set the secrets in Cloudflare. Never commit the private key.
+
+DEPLOY
+1. Replace these files in GitHub: worker.js, index.html, admin.html, delivery.html, sw.js, package.json
+2. Commit to main. Cloudflare Builds should deploy automatically.
+3. Open Admin, login, tap “Enable Screen-Off Alerts”, allow notifications.
+4. Tap “Test Ring”.
+5. Delivery Boy logs in, taps “Enable Screen-Off Alerts”, allows notifications.
+6. Place a test order.
+
+NOTIFICATION BEHAVIOR
+- Push notifications are designed to be delivered when the page is backgrounded/closed because the browser can wake the service worker for a push event.
+- Vibration is requested via the notification API. Actual sound/ringtone behavior is controlled by the phone/browser notification settings and Do Not Disturb; a website cannot force the phone to bypass those settings.
+- Push requires HTTPS and notification permission. On iOS/iPadOS, browser push support has additional installation requirements.
+- The existing D1 order/offer tables are preserved. The worker creates the push subscription table automatically.
