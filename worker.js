@@ -295,15 +295,7 @@ async function ensureDeliveryTables(env){
       await env.DB.prepare(`
         INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
         VALUES(?,?,?,?,?,?)
-      ).bind(
-  "DB001",
-  "Delivery Boy 1",
-  "",
-  env.DELIVERY_KEY,
-  env.DELIVERY_KEY,
-  1,
-  new Date().toISOString()
-).run();
+      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
     }
   }
 }
@@ -322,9 +314,11 @@ async function adminSessionValid(request,env){
     await ensureCoreTables(env);
     const s=getCookie(request,"classic_admin_session");
     if(!s) return false;
-    const row = await env.DB.prepare(
-  "SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ? LIMIT 1"
-).bind(s, new Date().toISOString()).first();
+    const row=await env.DB.prepare(`
+      SELECT token FROM admin_sessions
+      WHERE token=? AND expires_at>?
+      LIMIT 1
+    `).bind(s,new Date().toISOString()).first();
     return !!row;
   }catch{
     return false;
@@ -767,10 +761,10 @@ async function api(request,env,url){
       if(Number.isFinite(last)) n=last+1;
     }
     const id="DB"+String(n).padStart(3,"0");
-    await env.DB.prepare(
-  `INSERT INTO delivery_boys(id,name,mobile,delivery_key,access_key,active,created_at)
-   VALUES(?,?,?,?,?,?,?)`
-).bind(id,name,mobile,accessKey,accessKey,1,new Date().toISOString()).run();
+    await env.DB.prepare(`
+      INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
+      VALUES(?,?,?,?,?,?)
+    `).bind(id,name,mobile,accessKey,1,new Date().toISOString()).run();
     return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
 
