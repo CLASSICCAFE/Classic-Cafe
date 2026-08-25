@@ -190,7 +190,8 @@ async function ensureCoreTables(env){
     CREATE TABLE IF NOT EXISTS admin_sessions(
       token TEXT PRIMARY KEY,
       expires_at TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      admin_name TEXT
     )
   `).run();
 
@@ -265,6 +266,10 @@ async function ensureDeliveryTables(env){
   `).run();
 
   // Upgrade older D1 schemas without destroying existing data.
+  await addMissingColumns(env,"admin_sessions",{
+    admin_name:"TEXT"
+  });
+
   await addMissingColumns(env,"delivery_boys",{
     name:"TEXT",
     mobile:"TEXT",
@@ -309,6 +314,22 @@ function getCookie(request,name){
   return "";
 }
 
+async function getAdminSession(request,env){
+  try{
+    await ensureCoreTables(env);
+    const s=getCookie(request,"classic_admin_session");
+    if(!s) return null;
+    return await env.DB.prepare(`
+      SELECT token,admin_name,expires_at
+      FROM admin_sessions
+      WHERE token=? AND expires_at>?
+      LIMIT 1
+    `).bind(s,new Date().toISOString()).first();
+  }catch{
+    return null;
+  }
+}
+
 async function adminSessionValid(request,env){
   try{
     await ensureCoreTables(env);
@@ -329,7 +350,7 @@ async function authorized(request,env,type){
   if(type==="admin"){
     if(await adminSessionValid(request,env)) return true;
     const key=request.headers.get("x-admin-key");
-    return !!env.ADMIN_KEY && !!key && key===env.ADMIN_KEY;
+    return !!key && ((!!env.ADMIN_KEY && key===env.ADMIN_KEY) || (!!env.ADMIN_KEY_2 && key===env.ADMIN_KEY_2));
   }
 
   if(type==="delivery"){
@@ -460,24 +481,30 @@ async function api(request,env,url){
   await ensureCoreTables(env);
   await ensureDeliveryTables(env);
 
-  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
+  // Admin session bootstrap: ADMIN_KEY or ADMIN_KEY_2, then secure 24-hour cookie.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
     const key=request.headers.get("x-admin-key");
-    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
+    let adminName="";
+    if(env.ADMIN_KEY && key===env.ADMIN_KEY){
+      adminName=String(env.ADMIN_NAME||"Admin 1").trim();
+    }else if(env.ADMIN_KEY_2 && key===env.ADMIN_KEY_2){
+      adminName=String(env.ADMIN_NAME_2||"Admin 2").trim();
+    }else{
       return json({error:"Invalid Admin Key."},401);
     }
+
     await ensureCoreTables(env);
     const session=token();
     const expires=new Date(Date.now()+24*60*60*1000).toISOString();
     await env.DB.prepare(`
-      INSERT INTO admin_sessions(token,expires_at,created_at)
-      VALUES(?,?,?)
-    `).bind(session,expires,new Date().toISOString()).run();
+      INSERT INTO admin_sessions(token,expires_at,created_at,admin_name)
+      VALUES(?,?,?,?)
+    `).bind(session,expires,new Date().toISOString(),adminName).run();
 
     return new Response(JSON.stringify({
       ok:true,
       expires_at:expires,
-      admin_name:String(env.ADMIN_NAME||"Classic Cafe Admin").trim()
+      admin_name:adminName
     }),{
       status:200,
       headers:{
@@ -502,6 +529,12 @@ async function api(request,env,url){
         "set-cookie":"classic_admin_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax"
       }
     });
+  }
+
+  if(url.pathname==="/api/admin/me" && request.method==="GET"){
+    const s=await getAdminSession(request,env);
+    if(!s) return json({error:"Unauthorized"},401);
+    return json({ok:true,admin_name:String(s.admin_name||"Classic Cafe Admin").trim(),expires_at:s.expires_at});
   }
 
   // Public menu availability
@@ -902,7 +935,8 @@ async function api(request,env,url){
         rows=await env.DB.prepare(`
           SELECT o.*,da.delivery_boy_id FROM orders o
           JOIN delivery_assignments da ON da.order_id=o.id
-          WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
+          WHERE da.delivery_boy_id=?
+            AND o.status IN('NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY')
           ORDER BY o.created_at ASC LIMIT ?
         `).bind(boyId,limit).all();
       }
@@ -1034,9 +1068,14 @@ async function api(request,env,url){
 
     const row=await env.DB.prepare(`SELECT * FROM orders WHERE id=?`).bind(om[1]).first();
     if(!row) return json({error:"Order not found"},404);
-    const a=await env.DB.prepare(`SELECT delivery_boy_id FROM delivery_assignments WHERE order_id=?`).bind(om[1]).first();
+    const a=await env.DB.prepare(`
+      SELECT da.delivery_boy_id,b.name AS delivery_boy_name
+      FROM delivery_assignments da
+      LEFT JOIN delivery_boys b ON b.id=da.delivery_boy_id
+      WHERE da.order_id=?
+    `).bind(om[1]).first();
     let items=[]; try{items=JSON.parse(row.items_json||"[]")}catch{}
-    return json({ok:true,order:{...row,delivery_boy_id:a?.delivery_boy_id||null,items}});
+    return json({ok:true,order:{...row,delivery_boy_id:a?.delivery_boy_id||null,delivery_boy_name:a?.delivery_boy_name||null,items}});
   }
 
   return json({error:"Not found"},404);
