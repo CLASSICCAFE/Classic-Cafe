@@ -200,6 +200,12 @@ async function ensureCoreTables(env){
       created_at TEXT NOT NULL
     )
   `).run();
+  // Upgrade older D1 installations without destroying existing sessions/data.
+  await addMissingColumns(env,"admin_sessions",{
+    token:"TEXT",
+    expires_at:"TEXT",
+    created_at:"TEXT"
+  });
 
   // These are starter controls. Existing/real menu items can be added from Admin.
   const starters=[
@@ -806,6 +812,21 @@ async function api(request,env,url){
 
   if(url.pathname==="/api/health" && request.method==="GET"){
     return json({ok:true,service:"Classic Cafe Orders"});
+  }
+
+  // Public website settings. Only non-sensitive shop controls are exposed.
+  // Admin authentication is NOT required for this read-only endpoint.
+  if(url.pathname==="/api/public-settings" && request.method==="GET"){
+    const s=await getSettings(env);
+    return json({ok:true,settings:{
+      shop_open:s.shop_open,
+      website_orders:s.website_orders,
+      delivery_enabled:s.delivery_enabled,
+      opening_time:s.opening_time,
+      closing_time:s.closing_time,
+      delivery_radius:s.delivery_radius,
+      delivery_rate:s.delivery_rate
+    }});
   }
 
   // Settings
