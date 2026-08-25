@@ -106,10 +106,76 @@ function deliveryOpen(){const nowParts=new Intl.DateTimeFormat('en-GB',{timeZone
 function selectedPayment(){return document.querySelector('input[name="paymentMethod"]:checked')?.value||'COD'}
 function toggleUPI(){const m=selectedPayment();document.getElementById('upiBox').style.display=m==='UPI'?'block':'none';const totalNow=Number(grandTotal.textContent||0);document.getElementById('upiPayLink').href=`upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=Classic%20Cafe&am=${totalNow.toFixed(2)}&cu=INR`; }
 document.addEventListener('change',e=>{if(e.target.name==='paymentMethod')toggleUPI()});
-async function placeOrder(){if(!deliveryOpen()){alert(`🕐 Home delivery is open from ${formatMinutes(DELIVERY_START_MIN)} to ${formatMinutes(DELIVERY_END_MIN)}. Please place your order during delivery hours.`);return}let n=name.value.trim(),m=mobile.value.trim(),a=address.value.trim(),e=Object.values(cart),pm=selectedPayment();if(!e.length)return alert("Cart is empty.");if(!n||!/^[0-9]{10}$/.test(m)||!a)return alert("Please enter name, valid 10-digit mobile and address.");if(deliveryDistance===null)return alert("Please calculate delivery charge first.");if(deliveryDistance>RADIUS)return alert(`Sorry, delivery is available only within ${RADIUS} KM.`);const pos=window._classicLocation;if(!pos)return alert("Please calculate delivery charge again.");const btn=document.querySelector('.primary[onclick="placeOrder()"]');if(btn){btn.disabled=true;btn.textContent="⏳ Placing order..."}try{const res=await fetch('/api/orders',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customer_name:n,mobile:m,address:a,lat:pos.lat,lng:pos.lon,payment_method:pm,items:e.map(x=>({name:x.name,price:x.price,qty:x.qty}))})});const data=await res.json();if(!res.ok)throw new Error(data.error||'Order failed');const trackingToken=data.tracking_token;const saved={trackingToken,orderId:data.order_id,n,m,a,createdAt:new Date().toISOString()};let savedOrders=[];try{savedOrders=JSON.parse(localStorage.getItem('classicCafeOrders')||'[]')}catch{}savedOrders=[saved,...savedOrders.filter(x=>x.trackingToken!==trackingToken)].slice(0,10);localStorage.setItem('classicCafeOrders',JSON.stringify(savedOrders));alert(`✅ Order ${data.order_id} placed successfully.\n\nMy Orders section me live tracking milegi.`);cart={};deliveryDistance=null;deliveryCharge=0;window._classicLocation=null;update();cartView();closeCart();renderMyOrders();document.getElementById('myorders').scrollIntoView({behavior:'smooth'});}catch(err){alert('Order place nahi hua: '+err.message)}finally{if(btn){btn.disabled=false;btn.textContent="🛒 Place Order"}}}
+async function placeOrder(){
+  if(!deliveryOpen()){
+    alert(`🕐 Home delivery is open from ${formatMinutes(DELIVERY_START_MIN)} to ${formatMinutes(DELIVERY_END_MIN)}. Please place your order during delivery hours.`);
+    return;
+  }
+  let n=name.value.trim(),m=mobile.value.trim(),a=address.value.trim(),e=Object.values(cart),pm=selectedPayment();
+  if(!e.length)return alert("Cart is empty.");
+  if(!n||!/^[0-9]{10}$/.test(m)||!a)return alert("Please enter name, valid 10-digit mobile and address.");
+  if(deliveryDistance===null)return alert("Please calculate delivery charge first.");
+  if(deliveryDistance>RADIUS)return alert(`Sorry, delivery is available only within ${RADIUS} KM.`);
+  const pos=window._classicLocation;
+  if(!pos)return alert("Please calculate delivery charge again.");
+
+  const btn=document.querySelector('.primary[onclick="placeOrder()"]');
+  if(btn){btn.disabled=true;btn.textContent="⏳ Placing order..."}
+
+  // IMPORTANT: only the API request is treated as an order failure.
+  // After the Worker confirms the order, UI/localStorage errors must NOT
+  // show "Order place nahi hua", because the order is already in Admin.
+  let data;
+  try{
+    const res=await fetch('/api/orders',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({
+        customer_name:n,mobile:m,address:a,lat:pos.lat,lng:pos.lon,
+        payment_method:pm,
+        items:e.map(x=>({name:x.name,price:x.price,qty:x.qty}))
+      })
+    });
+    const raw=await res.text();
+    try{data=raw?JSON.parse(raw):{}}
+    catch(_){throw new Error("Server response invalid. Please check Worker deployment.")}
+    if(!res.ok)throw new Error(data.error||'Order failed');
+  }catch(err){
+    alert('Order place nahi hua: '+err.message);
+    if(btn){btn.disabled=false;btn.textContent="🛒 Place Order"}
+    return;
+  }
+
+  const trackingToken=data.tracking_token||"";
+  const orderId=data.order_id||"Order";
+  try{
+    const saved={trackingToken,orderId,n,m,a,createdAt:new Date().toISOString()};
+    let savedOrders=[];
+    try{savedOrders=JSON.parse(localStorage.getItem('classicCafeOrders')||'[]')}catch(_){}
+    if(trackingToken){
+      savedOrders=[saved,...savedOrders.filter(x=>x.trackingToken!==trackingToken)].slice(0,10);
+      try{localStorage.setItem('classicCafeOrders',JSON.stringify(savedOrders))}catch(_){}
+    }
+  }catch(_){}
+
+  // API has already confirmed the order, so show success regardless of
+  // any non-critical browser/localStorage UI issue.
+  alert(`✅ Order ${orderId} placed successfully.\n\nMy Orders section me live tracking milegi.`);
+
+  cart={};
+  deliveryDistance=null;
+  deliveryCharge=0;
+  window._classicLocation=null;
+  try{
+    update();cartView();closeCart();renderMyOrders();
+    document.getElementById('myorders').scrollIntoView({behavior:'smooth'});
+  }catch(_){}
+
+  if(btn){btn.disabled=false;btn.textContent="🛒 Place Order"}
+}
 function statusLabel(s){return ({NEW:'Received',ACCEPTED:'Accepted',PREPARING:'Preparing',OUT_FOR_DELIVERY:'Out for Delivery',DELIVERED:'Delivered',CANCELLED:'Cancelled'})[s]||s}
 function renderMyOrders(){const box=document.getElementById('myOrdersList');let arr=[];try{arr=JSON.parse(localStorage.getItem('classicCafeOrders')||'[]')}catch{}if(!arr.length){box.innerHTML='<div class="notice">Abhi koi saved order nahi hai.</div>';return}box.innerHTML=arr.map(o=>`<div class="orderMini" id="mini-${o.trackingToken}"><div class="row"><b>${o.orderId}</b><span class="status">Loading…</span></div><div class="small">${o.n||''} · ${o.m||''}</div><div class="trackbar"><span class="trackstep">Received</span><span class="trackstep">Accepted</span><span class="trackstep">Preparing</span><span class="trackstep">Delivery</span><span class="trackstep">Delivered</span></div><div class="details small" style="margin-top:8px"></div></div>`).join('');arr.forEach(o=>refreshMyOrder(o.trackingToken))}
-async function refreshMyOrder(token){try{const r=await fetch('/api/my-orders/'+encodeURIComponent(token));const d=await r.json();if(!r.ok)throw new Error(d.error||'Not found');const box=document.getElementById('mini-'+token);if(!box)return;box.querySelector('.status').textContent=statusLabel(d.order.status);const orderSteps=['NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY','DELIVERED'];const idx=orderSteps.indexOf(d.order.status);box.querySelectorAll('.trackstep').forEach((el,i)=>el.classList.toggle('on',i<=idx));box.querySelector('.details').innerHTML=`💰 Total ₹${d.order.grand_total} · 💳 ${d.order.payment_method} · ${d.order.payment_status}<br>📍 ${d.order.address||''}`;}catch(e){}}
+async function refreshMyOrder(token){try{const r=await fetch('/api/track/'+encodeURIComponent(token));const d=await r.json();if(!r.ok)throw new Error(d.error||'Not found');const box=document.getElementById('mini-'+token);if(!box)return;box.querySelector('.status').textContent=statusLabel(d.order.status);const orderSteps=['NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY','DELIVERED'];const idx=orderSteps.indexOf(d.order.status);box.querySelectorAll('.trackstep').forEach((el,i)=>el.classList.toggle('on',i<=idx));box.querySelector('.details').innerHTML=`💰 Total ₹${d.order.grand_total} · 💳 ${d.order.payment_method} · ${d.order.payment_status}<br>📍 ${d.order.address||''}`;}catch(e){}}
 function refreshMyOrders(){let arr=[];try{arr=JSON.parse(localStorage.getItem('classicCafeOrders')||'[]')}catch{}arr.forEach(o=>refreshMyOrder(o.trackingToken))}
 const tabsEl=document.getElementById("tabs"),menuList=document.getElementById("menuList"),modal=document.getElementById("modal"),cartItems=document.getElementById("cartItems"),count=document.getElementById("count"),total=document.getElementById("total"),foodTotal=document.getElementById("foodTotal"),deliveryChargeEl=document.getElementById("deliveryCharge"),grandTotal=document.getElementById("grandTotal"),name=document.getElementById("name"),mobile=document.getElementById("mobile"),address=document.getElementById("address"),locationStatus=document.getElementById("locationStatus");async function syncMenuState(){try{const r=await fetch('/api/menu');const d=await r.json();(d.items||[]).forEach(i=>{const k=String(i.name||'').toLowerCase();AVAIL[k]=!!i.available;OFFERS[k]=Number(i.discount_percent||0);DBPRICE[k]=Number(i.price||0)});render()}catch(e){}}
 syncPublicSettings();syncMenuState();tabs();render();update();renderMyOrders();toggleUPI();
