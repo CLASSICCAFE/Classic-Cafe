@@ -1,0 +1,35 @@
+CLASSIC CAFE V13
+
+Files:
+- index.html: customer website; WhatsApp direct order removed; Place Order only; My Orders tracking; UPI QR checkout.
+- admin.html: manual refresh only, top section buttons, 3 latest alerts + Show More, new-order popup with sound/vibration, menu availability/offers, delivery-boy registration, OTP approval, order workflow, Mark Paid.
+- delivery.html: registered-mobile OTP login, assigned orders, status updates, location sending.
+- track.html: customer tracking page.
+- worker.js: backend based on the existing worker with UPI payment method, automatic Admin WhatsApp API hook, safer Delivery Boy registration, customer My Orders endpoint.
+- cafe-map.jpg, cafe-front.jpg, menu-card-1.jpg, menu-card-2.jpg, phonepe-qr.jpg: new website images.
+
+WHATSAPP ADMIN AUTO MESSAGE
+For automatic WhatsApp notifications to the Admin, add these Cloudflare Worker Secrets:
+WHATSAPP_TOKEN
+WHATSAPP_PHONE_NUMBER_ID
+WHATSAPP_ADMIN_TO
+
+Optional for WhatsApp Business approved-template delivery:
+WHATSAPP_TEMPLATE_NAME
+WHATSAPP_TEMPLATE_LANG (default: en_US)
+WHATSAPP_API_VERSION (default: v22.0)
+
+The new-order notification contains: Order ID, time, customer name/mobile, address, distance, every item + quantity + offer, food total, delivery charge, grand total, payment method, NEW status and tracking link.
+
+If template mode is not configured, V13 sends a text notification. The Worker logs a WhatsApp API error if delivery fails and the order itself is still saved successfully.
+
+ADMIN_KEY_2 (optional second Admin login key)
+The code does not fail the order if WhatsApp sending is unavailable.
+
+PAYMENT
+UPI ID: Q496344685@ybl
+Customer can scan the QR or tap Open UPI App. Payment status remains UNPAID until Admin marks it PAID.
+
+IMPORTANT
+Existing Cloudflare D1 database is preserved. Deploy worker.js with the same DB binding.
+Do not expose ADMIN_KEY or WhatsApp tokens in HTML/GitHub.
