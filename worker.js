@@ -620,6 +620,31 @@ async function api(request,env,url){
     return json({ok:true,items:await publicMenu(env)});
   }
 
+  // Admin bulk offer: apply one discount percentage to one or many categories.
+  // This is explicit admin-only; no offer is created automatically.
+  if(url.pathname==="/api/admin/menu/offer" && request.method==="PUT"){
+    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
+    await ensureCoreTables(env);
+    let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
+    let categories=[];
+    if(Array.isArray(b.categories)) categories=b.categories.map(x=>String(x||"").trim()).filter(Boolean);
+    else if(b.category) categories=[String(b.category).trim()].filter(Boolean);
+    categories=[...new Set(categories)];
+    if(!categories.length) return json({error:"At least one category is required."},400);
+    const discount=Number(b.discount_percent);
+    if(!Number.isFinite(discount)||discount<0||discount>100){
+      return json({error:"Discount must be between 0 and 100 percent."},400);
+    }
+    const now=new Date().toISOString();
+    for(const category of categories){
+      await env.DB.prepare(`
+        UPDATE menu_items SET discount_percent=?,updated_at=?
+        WHERE lower(category)=lower(?)
+      `).bind(discount,now,category).run();
+    }
+    return json({ok:true,categories,discount_percent:discount,items:await publicMenu(env)});
+  }
+
   // Admin category availability: turn an entire category ON/OFF at once.
   if(url.pathname==="/api/admin/menu/category" && request.method==="PUT"){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
@@ -1042,12 +1067,21 @@ async function api(request,env,url){
     if(deliveryAllowed&&!adminAllowed){
       const boyId=await getDeliveryBoyId(request,env);
       if(!boyId) return json({error:"Delivery Boy not found"},401);
-      rows=await env.DB.prepare(`
-        SELECT o.*,da.delivery_boy_id FROM orders o
-        JOIN delivery_assignments da ON da.order_id=o.id
-        WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
-        ORDER BY o.created_at ASC LIMIT ?
-      `).bind(boyId,limit).all();
+      if(url.searchParams.get("history")==="1") {
+        rows=await env.DB.prepare(`
+          SELECT o.*,da.delivery_boy_id FROM orders o
+          JOIN delivery_assignments da ON da.order_id=o.id
+          WHERE da.delivery_boy_id=?
+          ORDER BY o.created_at DESC LIMIT ?
+        `).bind(boyId,limit).all();
+      } else {
+        rows=await env.DB.prepare(`
+          SELECT o.*,da.delivery_boy_id FROM orders o
+          JOIN delivery_assignments da ON da.order_id=o.id
+          WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
+          ORDER BY o.created_at ASC LIMIT ?
+        `).bind(boyId,limit).all();
+      }
     }else{
       rows=await env.DB.prepare(`
         SELECT o.*,da.delivery_boy_id FROM orders o
