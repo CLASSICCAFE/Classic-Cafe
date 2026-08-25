@@ -126,13 +126,19 @@ async function placeOrder(){
   // After the Worker confirms the order, UI/localStorage errors must NOT
   // show "Order place nahi hua", because the order is already in Admin.
   let data;
+  let clientToken='';
+  try{clientToken=localStorage.getItem('classicCafePendingOrderToken')||''}catch(_){ }
+  if(!clientToken){
+    clientToken=(crypto.randomUUID?crypto.randomUUID():('cc_'+Date.now()+'_'+Math.random().toString(36).slice(2))).replace(/[^A-Za-z0-9_-]/g,'');
+    try{localStorage.setItem('classicCafePendingOrderToken',clientToken)}catch(_){ }
+  }
   try{
     const res=await fetch('/api/orders',{
       method:'POST',
       headers:{'content-type':'application/json'},
       body:JSON.stringify({
         customer_name:n,mobile:m,address:a,lat:pos.lat,lng:pos.lon,
-        payment_method:pm,
+        payment_method:pm,client_token:clientToken,
         items:e.map(x=>({name:x.name,price:x.price,qty:x.qty}))
       })
     });
