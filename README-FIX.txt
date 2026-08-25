@@ -1,7 +1,26 @@
-Classic Cafe V14 - Admin 24 Hour Session
+CLASSIC CAFE FIX v4
 
-1. worker.js: Admin session ab exactly 24 hours valid hai. Cookie bhi 24 hours ka hai. Browser close/reopen ke baad valid session automatically dashboard khol dega. Logout se server-side session turant delete hoga.
-2. admin.html: Page load par existing secure admin cookie check hoti hai; valid ho to Admin Key dobara nahi maangi jayegi.
-3. Admin name: Cloudflare Worker Runtime Variable me ADMIN_NAME add karein, value jaise "Ashok" ya "Classic Cafe Owner". Login response me ye name dashboard header me dikhega. Agar ADMIN_NAME set nahi hai to default "Classic Cafe Admin" dikhega.
-4. ADMIN_KEY wahi existing secret rahega. ADMIN_NAME ko secret banana zaroori nahi hai; Runtime Variable ke roop me add karein.
-5. Deploy ke baad browser me Ctrl+F5 / hard refresh karein.
+Fixed:
+- ADMIN_KEY + ADMIN_KEY_2 both accepted.
+- ADMIN_NAME + ADMIN_NAME_2 shown according to the key used.
+- Admin session is server-side and valid 24 hours; browser close does not log out.
+- Admin Logout immediately invalidates the session.
+- Admin name is restored after browser reopen.
+- Delivery active orders exclude DELIVERED/CANCELLED at the API and UI level.
+- Delivery dashboard shows Delivery Boy name + Sr. No.
+
+Cloudflare variables:
+ADMIN_KEY       = Secret
+ADMIN_KEY_2     = Secret
+ADMIN_NAME      = Text (example: Ashok)
+ADMIN_NAME_2    = Text (example: Suresh)
+DELIVERY_KEY    = Secret
+
+Keep D1 binding name: DB
+
+Deploy all 3 files together:
+worker.js
+admin.html
+delivery.html
+
+After deployment, test in a fresh InPrivate/Incognito window or hard refresh.
