@@ -384,8 +384,11 @@ async function adminSessionValid(request,env){
 async function authorized(request,env,type){
   if(type==="admin"){
     if(await adminSessionValid(request,env)) return true;
-    const key=request.headers.get("x-admin-key");
-    return !!key && ((!!env.ADMIN_KEY && key===env.ADMIN_KEY) || (!!env.ADMIN_KEY_2 && key===env.ADMIN_KEY_2));
+    const key=String(request.headers.get("x-admin-key")||"").trim();
+    return !!key && (
+      (!!env.ADMIN_KEY && key===String(env.ADMIN_KEY).trim()) ||
+      (!!env.ADMIN_KEY_2 && key===String(env.ADMIN_KEY_2).trim())
+    );
   }
 
   if(type==="delivery"){
@@ -538,10 +541,15 @@ async function api(request,env,url){
   await ensureCoreTables(env);
   await ensureDeliveryTables(env);
 
-  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
+  // Admin session bootstrap: ADMIN_KEY and ADMIN_KEY_2 both have full Admin access.
+  // Either key can create the same secure Admin session.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
-    const key=request.headers.get("x-admin-key");
-    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
+    const key=String(request.headers.get("x-admin-key")||"").trim();
+    const validAdminKey =
+      (!!env.ADMIN_KEY && key===String(env.ADMIN_KEY).trim()) ||
+      (!!env.ADMIN_KEY_2 && key===String(env.ADMIN_KEY_2).trim());
+
+    if(!validAdminKey){
       return json({error:"Invalid Admin Key."},401);
     }
     await ensureCoreTables(env);
