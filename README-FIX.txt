@@ -21,3 +21,6 @@ DELIVERY_KEY    = Secret
 
 Deploy worker.js, admin.html and delivery.html together.
 After deployment, hard refresh or use an Incognito window for testing.
+
+
+V6 session fix: Admin now stores the 24-hour session token in localStorage and sends x-admin-session on refresh/API calls; server accepts cookie or header. Delivery keeps its 24-hour session in localStorage and logout invalidates the server session.
