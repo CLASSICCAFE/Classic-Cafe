@@ -277,8 +277,45 @@ async function ensureDeliveryTables(env){
     mobile:"TEXT",
     access_key:"TEXT",
     active:"INTEGER DEFAULT 1",
-    created_at:"TEXT"
+    created_at:"TEXT",
+    // Legacy columns from the earlier Delivery Boy schema.
+    // They are kept for backward compatibility with the existing D1 table.
+    phone:"TEXT",
+    delivery_key:"TEXT",
+    active_at:"INTEGER DEFAULT 1"
   });
+
+  // Migrate/synchronise the old column names with the new names.
+  // This is important because an existing D1 table is NOT replaced by
+  // CREATE TABLE IF NOT EXISTS, and older NOT NULL columns can otherwise
+  // cause "Worker exception" on a new Delivery Boy insert.
+  const deliveryCols=await tableColumns(env,"delivery_boys");
+  if(deliveryCols.has("phone") && deliveryCols.has("mobile")){
+    await env.DB.prepare(`
+      UPDATE delivery_boys
+      SET mobile=phone
+      WHERE (mobile IS NULL OR trim(mobile)='') AND phone IS NOT NULL AND trim(phone)<>''
+    `).run();
+  }
+  if(deliveryCols.has("delivery_key") && deliveryCols.has("access_key")){
+    await env.DB.prepare(`
+      UPDATE delivery_boys
+      SET access_key=delivery_key
+      WHERE (access_key IS NULL OR trim(access_key)='') AND delivery_key IS NOT NULL AND trim(delivery_key)<>''
+    `).run();
+    await env.DB.prepare(`
+      UPDATE delivery_boys
+      SET delivery_key=access_key
+      WHERE (delivery_key IS NULL OR trim(delivery_key)='') AND access_key IS NOT NULL AND trim(access_key)<>''
+    `).run();
+  }
+  if(deliveryCols.has("active_at") && deliveryCols.has("active")){
+    await env.DB.prepare(`
+      UPDATE delivery_boys
+      SET active_at=active
+      WHERE active IS NOT NULL
+    `).run();
+  }
   await addMissingColumns(env,"delivery_otp_requests",{
     mobile:"TEXT",
     otp:"TEXT",
@@ -296,13 +333,25 @@ async function ensureDeliveryTables(env){
 
   if(env.DELIVERY_KEY){
     const x=await env.DB.prepare(`
-      SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1
-    `).bind(env.DELIVERY_KEY).first();
-    if(!x){
+      SELECT id FROM delivery_boys
+      WHERE access_key=? OR delivery_key=?
+      LIMIT 1
+    `).bind(env.DELIVERY_KEY,env.DELIVERY_KEY).first();
+
+    if(x){
+      // Make sure the legacy and current key columns stay in sync.
+      if(deliveryCols.has("access_key")) await env.DB.prepare(`UPDATE delivery_boys SET access_key=? WHERE id=?`).bind(env.DELIVERY_KEY,x.id).run();
+      if(deliveryCols.has("delivery_key")) await env.DB.prepare(`UPDATE delivery_boys SET delivery_key=? WHERE id=?`).bind(env.DELIVERY_KEY,x.id).run();
+    }else{
+      const now=new Date().toISOString();
       await env.DB.prepare(`
-        INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
-        VALUES(?,?,?,?,?,?)
-      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
+        INSERT INTO delivery_boys(
+          id,name,mobile,access_key,active,created_at,phone,delivery_key,active_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)
+      `).bind(
+        "DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,now,"",env.DELIVERY_KEY,1
+      ).run();
     }
   }
 }
@@ -801,11 +850,16 @@ async function api(request,env,url){
     let n=0;
     for(const r of (rows.results||[])){ const m=String(r.id||"").match(/^DB(\d+)$/); if(m) n=Math.max(n,Number(m[1])); }
     const id="DB"+String(n+1).padStart(3,"0");
+    const now=new Date().toISOString();
     await env.DB.prepare(`
-      INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
-      VALUES(?,?,?,?,?,?)
-    `).bind(id,name,mobile,accessKey,1,new Date().toISOString()).run();
-    return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
+      INSERT INTO delivery_boys(
+        id,name,mobile,access_key,active,created_at,phone,delivery_key,active_at
+      )
+      VALUES(?,?,?,?,?,?,?,?,?)
+    `).bind(
+      id,name,mobile,accessKey,1,now,mobile,accessKey,1
+    ).run();
+    return json({ok:true,delivery_boy:{id,name,mobile,active:1,access_key:accessKey}});
   }
 
   const boyMatch=url.pathname.match(/^\/api\/delivery\/boys\/([^/]+)$/);
@@ -814,11 +868,15 @@ async function api(request,env,url){
     await ensureDeliveryTables(env);
     const id=decodeURIComponent(boyMatch[1]);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
-    if(b.active!==undefined) await env.DB.prepare(`UPDATE delivery_boys SET active=? WHERE id=?`).bind(b.active?1:0,id).run();
+    if(b.active!==undefined){
+      const active=b.active?1:0;
+      await env.DB.prepare(`UPDATE delivery_boys SET active=? WHERE id=?`).bind(active,id).run();
+      await env.DB.prepare(`UPDATE delivery_boys SET active_at=? WHERE id=?`).bind(active,id).run();
+    }
     if(b.mobile!==undefined){
       const mobile=String(b.mobile||"").trim();
       if(mobile&&!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
-      await env.DB.prepare(`UPDATE delivery_boys SET mobile=? WHERE id=?`).bind(mobile,id).run();
+      await env.DB.prepare(`UPDATE delivery_boys SET mobile=?,phone=? WHERE id=?`).bind(mobile,mobile,id).run();
     }
     if(b.name!==undefined){
       const name=String(b.name||"").trim();
