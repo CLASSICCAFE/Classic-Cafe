@@ -292,16 +292,24 @@ async function ensureDeliveryTables(env){
     created_at:"TEXT"
   });
 
-  if(env.DELIVERY_KEY){
-    const x=await env.DB.prepare(`
-      SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1
-    `).bind(env.DELIVERY_KEY).first();
-    if(!x){
-      await env.DB.prepare(`
-        INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
-        VALUES(?,?,?,?,?,?)
-      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
-    }
+  // One-time cleanup/migration: remove the old placeholder "Delivery Boy 1"
+  // and promote the existing Praveen record (formerly DB005) to DB001.
+  // Existing assignments/sessions/OTP requests are moved first so history is preserved.
+  const oldBoy=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE id='DB001' AND name='Delivery Boy 1' LIMIT 1`).first();
+  const praveen=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE lower(name)=lower('Praveen') ORDER BY id DESC LIMIT 1`).first();
+  const id001=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE id='DB001' LIMIT 1`).first();
+  if(praveen && oldBoy){
+    await env.DB.prepare(`UPDATE delivery_assignments SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
+    await env.DB.prepare(`UPDATE delivery_sessions SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
+    await env.DB.prepare(`UPDATE delivery_otp_requests SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
+    await env.DB.prepare(`DELETE FROM delivery_boys WHERE id='DB001'`).run();
+    await env.DB.prepare(`UPDATE delivery_boys SET id='DB001' WHERE id=?`).bind(praveen.id).run();
+  } else if(praveen && !id001){
+    await env.DB.prepare(`UPDATE delivery_boys SET id='DB001' WHERE id=?`).bind(praveen.id).run();
+  } else if(oldBoy && !praveen){
+    // Do not recreate the placeholder automatically; Delivery Boys are managed by Admin.
+    await env.DB.prepare(`DELETE FROM delivery_sessions WHERE delivery_boy_id='DB001'`).run();
+    await env.DB.prepare(`DELETE FROM delivery_boys WHERE id='DB001' AND name='Delivery Boy 1'`).run();
   }
 }
 
@@ -317,7 +325,7 @@ function getCookie(request,name){
 async function getAdminSession(request,env){
   try{
     await ensureCoreTables(env);
-    const s=getCookie(request,"classic_admin_session");
+    const s=getCookie(request,"classic_admin_session") || String(request.headers.get("x-admin-session")||"").trim();
     if(!s) return null;
     return await env.DB.prepare(`
       SELECT token,admin_name,expires_at
@@ -410,41 +418,112 @@ async function getAssignDistance(env){
   return Math.min(Math.max(Number(s.auto_assign_distance)||DEFAULT_ASSIGN_DISTANCE,0.5),10);
 }
 
-async function getLatestLoggedInDeliveryBoy(env){
+async function getLoggedInDeliveryBoys(env){
   await ensureDeliveryTables(env);
-  const row=await env.DB.prepare(`
+  const rows=await env.DB.prepare(`
     SELECT s.delivery_boy_id,b.name,b.mobile,s.created_at
     FROM delivery_sessions s
     JOIN delivery_boys b ON b.id=s.delivery_boy_id
     WHERE s.expires_at>? AND b.active=1
-    ORDER BY s.created_at DESC
-    LIMIT 1
-  `).bind(new Date().toISOString()).first();
-  return row||null;
+    ORDER BY b.id ASC
+  `).bind(new Date().toISOString()).all();
+  return rows.results||[];
 }
 
 async function autoAssignOrder(env,orderId,lat,lng){
   await ensureDeliveryTables(env);
 
-  // IMPORTANT: a new order goes only to a currently logged-in Delivery Boy.
-  // If multiple boys are logged in, the most recently logged-in active session wins.
-  const loggedIn=await getLatestLoggedInDeliveryBoy(env);
-  if(!loggedIn){
+  // Only currently logged-in + active Delivery Boys can receive new orders.
+  const loggedIn=await getLoggedInDeliveryBoys(env);
+  if(!loggedIn.length){
     return {assigned:false,reason:"NO_LOGGED_IN_DELIVERY_BOY"};
   }
+
+  const now=new Date().toISOString();
+  const assignDistance=await getAssignDistance(env);
+
+  // If a new order is close to the most recent still-active order (default
+  // assignment distance is configurable; for the requested setup use 1 KM),
+  // keep both orders with the same logged-in delivery boy. This helps a rider
+  // deliver nearby orders together instead of splitting them between riders.
+  const nearby=await env.DB.prepare(`
+    SELECT da.delivery_boy_id,da.assigned_at,o.id,o.lat,o.lng,o.status
+    FROM delivery_assignments da
+    JOIN orders o ON o.id=da.order_id
+    WHERE da.delivery_boy_id IN (${loggedIn.map(()=>'?').join(',')})
+      AND o.id<>?
+      AND o.lat IS NOT NULL AND o.lng IS NOT NULL
+      AND o.status NOT IN ('DELIVERED','CANCELLED')
+    ORDER BY da.assigned_at DESC
+    LIMIT 25
+  `).bind(...loggedIn.map(x=>x.delivery_boy_id),orderId).all();
+
+  const toRad=v=>Number(v)*Math.PI/180;
+  const distanceKm=(aLat,aLng,bLat,bLng)=>{
+    const R=6371;
+    const dLat=toRad(Number(bLat)-Number(aLat));
+    const dLng=toRad(Number(bLng)-Number(aLng));
+    const aa=Math.sin(dLat/2)**2+
+      Math.cos(toRad(Number(aLat)))*Math.cos(toRad(Number(bLat)))*Math.sin(dLng/2)**2;
+    return R*2*Math.atan2(Math.sqrt(aa),Math.sqrt(Math.max(0,1-aa)));
+  };
+
+  if(Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))){
+    for(const candidate of (nearby.results||[])){
+      const d=distanceKm(lat,lng,candidate.lat,candidate.lng);
+      // Requested grouping threshold: 1 KM. Keep this explicit instead of
+      // using the general auto-assign radius, which is for other UI settings.
+      if(d<=1){
+        const assignedAt=now;
+        await env.DB.prepare(`
+          INSERT INTO delivery_assignments(order_id,delivery_boy_id,assigned_at)
+          VALUES(?,?,?)
+          ON CONFLICT(order_id) DO UPDATE SET
+            delivery_boy_id=excluded.delivery_boy_id,assigned_at=excluded.assigned_at
+        `).bind(orderId,candidate.delivery_boy_id,assignedAt).run();
+
+        const boy=loggedIn.find(x=>x.delivery_boy_id===candidate.delivery_boy_id);
+        return {
+          assigned:true,
+          delivery_boy_id:candidate.delivery_boy_id,
+          delivery_boy_name:boy?.name||null,
+          distance_km:Number(d.toFixed(2)),
+          rule:"NEARBY_ORDER_WITHIN_1_KM"
+        };
+      }
+    }
+  }
+
+  // No nearby active order: distribute among currently logged-in boys.
+  const last=await env.DB.prepare(`
+    SELECT da.delivery_boy_id
+    FROM delivery_assignments da
+    JOIN orders o ON o.id=da.order_id
+    WHERE da.delivery_boy_id IN (${loggedIn.map(()=>'?').join(',')})
+    ORDER BY da.assigned_at DESC
+    LIMIT 1
+  `).bind(...loggedIn.map(x=>x.delivery_boy_id)).first();
+
+  let idx=0;
+  if(last){
+    const lastIdx=loggedIn.findIndex(x=>x.delivery_boy_id===last.delivery_boy_id);
+    idx=lastIdx>=0 ? (lastIdx+1)%loggedIn.length : 0;
+  }
+  const selected=loggedIn[idx];
 
   await env.DB.prepare(`
     INSERT INTO delivery_assignments(order_id,delivery_boy_id,assigned_at)
     VALUES(?,?,?)
     ON CONFLICT(order_id) DO UPDATE SET
       delivery_boy_id=excluded.delivery_boy_id,assigned_at=excluded.assigned_at
-  `).bind(orderId,loggedIn.delivery_boy_id,new Date().toISOString()).run();
+  `).bind(orderId,selected.delivery_boy_id,now).run();
 
   return {
     assigned:true,
-    delivery_boy_id:loggedIn.delivery_boy_id,
+    delivery_boy_id:selected.delivery_boy_id,
+    delivery_boy_name:selected.name,
     distance_km:null,
-    rule:"LOGGED_IN_DELIVERY_BOY"
+    rule:"LOGGED_IN_ROUND_ROBIN"
   };
 }
 
@@ -504,7 +583,8 @@ async function api(request,env,url){
     return new Response(JSON.stringify({
       ok:true,
       expires_at:expires,
-      admin_name:adminName
+      admin_name:adminName,
+      session_token:session
     }),{
       status:200,
       headers:{
@@ -700,7 +780,7 @@ async function api(request,env,url){
     `).bind(session,boy.id,exp,new Date().toISOString()).run();
     await env.DB.prepare(`UPDATE delivery_otp_requests SET used=1 WHERE id=?`).bind(row.id).run();
 
-    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE id<=?`).bind(boy.id).first();
+    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE active=1 AND id<=?`).bind(boy.id).first();
     const sr_no=Number(srRow?.sr_no||0);
     return json({ok:true,message:"Delivery Boy login successful.",session_token:session,expires_at:exp,delivery_boy:{id:boy.id,name:boy.name,mobile:boy.mobile,sr_no}});
   }
@@ -848,7 +928,7 @@ async function api(request,env,url){
     `).bind(boyId).first();
     const boy=await env.DB.prepare(`SELECT id,name,mobile,active FROM delivery_boys WHERE id=? LIMIT 1`).bind(boyId).first();
     if(!boy) return json({error:"Delivery Boy not found"},401);
-    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE id<=?`).bind(boy.id).first();
+    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE active=1 AND id<=?`).bind(boy.id).first();
     return json({ok:true,completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
   }
 
