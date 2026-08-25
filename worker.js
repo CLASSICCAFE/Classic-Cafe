@@ -127,8 +127,14 @@ async function ensureOrdersTables(env){
     payment_method:"TEXT",
     payment_status:"TEXT",
     status:"TEXT",
-    items_json:"TEXT"
+    items_json:"TEXT",
+    client_token:"TEXT"
   });
+  try{
+    await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_client_token ON orders(client_token) WHERE client_token IS NOT NULL`).run();
+  }catch(error){
+    console.error('CLIENT TOKEN INDEX ERROR',error?.stack||error);
+  }
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS order_tracking(
@@ -292,25 +298,9 @@ async function ensureDeliveryTables(env){
     created_at:"TEXT"
   });
 
-  // One-time cleanup/migration: remove the old placeholder "Delivery Boy 1"
-  // and promote the existing Praveen record (formerly DB005) to DB001.
-  // Existing assignments/sessions/OTP requests are moved first so history is preserved.
-  const oldBoy=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE id='DB001' AND name='Delivery Boy 1' LIMIT 1`).first();
-  const praveen=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE lower(name)=lower('Praveen') ORDER BY id DESC LIMIT 1`).first();
-  const id001=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE id='DB001' LIMIT 1`).first();
-  if(praveen && oldBoy){
-    await env.DB.prepare(`UPDATE delivery_assignments SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
-    await env.DB.prepare(`UPDATE delivery_sessions SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
-    await env.DB.prepare(`UPDATE delivery_otp_requests SET delivery_boy_id='DB001' WHERE delivery_boy_id=?`).bind(praveen.id).run();
-    await env.DB.prepare(`DELETE FROM delivery_boys WHERE id='DB001'`).run();
-    await env.DB.prepare(`UPDATE delivery_boys SET id='DB001' WHERE id=?`).bind(praveen.id).run();
-  } else if(praveen && !id001){
-    await env.DB.prepare(`UPDATE delivery_boys SET id='DB001' WHERE id=?`).bind(praveen.id).run();
-  } else if(oldBoy && !praveen){
-    // Do not recreate the placeholder automatically; Delivery Boys are managed by Admin.
-    await env.DB.prepare(`DELETE FROM delivery_sessions WHERE delivery_boy_id='DB001'`).run();
-    await env.DB.prepare(`DELETE FROM delivery_boys WHERE id='DB001' AND name='Delivery Boy 1'`).run();
-  }
+  // Existing Delivery Boy IDs are preserved. Do not rename/delete records during
+  // normal requests: concurrent D1 requests can otherwise race and cause 503s.
+
 }
 
 function getCookie(request,name){
@@ -340,14 +330,7 @@ async function getAdminSession(request,env){
 
 async function adminSessionValid(request,env){
   try{
-    await ensureCoreTables(env);
-    const s=getCookie(request,"classic_admin_session");
-    if(!s) return false;
-    const row=await env.DB.prepare(`
-      SELECT token FROM admin_sessions
-      WHERE token=? AND expires_at>?
-      LIMIT 1
-    `).bind(s,new Date().toISOString()).first();
+    const row=await getAdminSession(request,env);
     return !!row;
   }catch{
     return false;
@@ -430,32 +413,8 @@ async function getLoggedInDeliveryBoys(env){
   return rows.results||[];
 }
 
-async function assignPendingOrdersForLoggedIn(env){
-  await ensureDeliveryTables(env);
-  const pending=await env.DB.prepare(`
-    SELECT o.id,o.lat,o.lng
-    FROM orders o
-    LEFT JOIN delivery_assignments da ON da.order_id=o.id
-    WHERE da.order_id IS NULL
-      AND o.status IN ('NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY')
-    ORDER BY o.created_at ASC
-    LIMIT 100
-  `).all();
-  let assigned=0;
-  for(const o of (pending.results||[])){
-    const r=await autoAssignOrder(env,o.id,o.lat,o.lng);
-    if(r?.assigned) assigned++;
-  }
-  return assigned;
-}
-
 async function autoAssignOrder(env,orderId,lat,lng){
   await ensureDeliveryTables(env);
-  const already=await env.DB.prepare(`SELECT delivery_boy_id FROM delivery_assignments WHERE order_id=? LIMIT 1`).bind(orderId).first();
-  if(already?.delivery_boy_id){
-    const boy=await env.DB.prepare(`SELECT id,name FROM delivery_boys WHERE id=? LIMIT 1`).bind(already.delivery_boy_id).first();
-    return {assigned:true,delivery_boy_id:already.delivery_boy_id,delivery_boy_name:boy?.name||null,rule:'ALREADY_ASSIGNED'};
-  }
 
   // Only currently logged-in + active Delivery Boys can receive new orders.
   const loggedIn=await getLoggedInDeliveryBoys(env);
@@ -549,6 +508,31 @@ async function autoAssignOrder(env,orderId,lat,lng){
     distance_km:null,
     rule:"LOGGED_IN_ROUND_ROBIN"
   };
+}
+
+async function assignPendingOrders(env){
+  await ensureDeliveryTables(env);
+  const loggedIn=await getLoggedInDeliveryBoys(env);
+  if(!loggedIn.length) return {assigned:0,remaining:0};
+  const rows=await env.DB.prepare(`
+    SELECT o.id,o.lat,o.lng,o.status
+    FROM orders o
+    LEFT JOIN delivery_assignments da ON da.order_id=o.id
+    WHERE da.order_id IS NULL
+      AND o.status IN('NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY')
+    ORDER BY o.created_at ASC
+    LIMIT 100
+  `).all();
+  let assigned=0;
+  for(const o of (rows.results||[])){
+    try{
+      const r=await autoAssignOrder(env,o.id,o.lat,o.lng);
+      if(r?.assigned) assigned++;
+    }catch(error){
+      console.error('PENDING ASSIGN ERROR',o.id,error?.stack||error);
+    }
+  }
+  return {assigned,remaining:Math.max(0,(rows.results||[]).length-assigned)};
 }
 
 async function publicMenu(env){
@@ -803,6 +787,9 @@ async function api(request,env,url){
       VALUES(?,?,?,?)
     `).bind(session,boy.id,exp,new Date().toISOString()).run();
     await env.DB.prepare(`UPDATE delivery_otp_requests SET used=1 WHERE id=?`).bind(row.id).run();
+    // A rider who just logged in should immediately receive any older
+    // unassigned active orders. Assignment failure must not invalidate login.
+    try{ await assignPendingOrders(env); }catch(error){ console.error('LOGIN ASSIGN ERROR',error?.stack||error); }
 
     const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE active=1 AND id<=?`).bind(boy.id).first();
     const sr_no=Number(srRow?.sr_no||0);
@@ -944,9 +931,6 @@ async function api(request,env,url){
     await ensureDeliveryTables(env);
     const boyId=await getDeliveryBoyId(request,env);
     if(!boyId) return json({error:"Delivery Boy not found"},401);
-    // A new order may have been created while no rider was logged in.
-    // When any active rider logs in/refreshes, assign all still-unassigned active orders.
-    const pendingAssigned=await assignPendingOrdersForLoggedIn(env);
     const row=await env.DB.prepare(`
       SELECT COUNT(*) AS completed_today,COALESCE(SUM(o.delivery_charge),0) AS earnings_today
       FROM orders o JOIN delivery_assignments da ON da.order_id=o.id
@@ -956,7 +940,7 @@ async function api(request,env,url){
     const boy=await env.DB.prepare(`SELECT id,name,mobile,active FROM delivery_boys WHERE id=? LIMIT 1`).bind(boyId).first();
     if(!boy) return json({error:"Delivery Boy not found"},401);
     const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE active=1 AND id<=?`).bind(boy.id).first();
-    return json({ok:true,pending_assigned:Number(pendingAssigned||0),completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
+    return json({ok:true,completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
   }
 
   // Create order
@@ -971,10 +955,25 @@ async function api(request,env,url){
 
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
     const {customer_name,mobile,address,lat,lng,items}=b;
+    const paymentMethod=String(b.payment_method||"COD_OR_UPI_TO_DELIVERY_BOY").trim();
+    const clientToken=String(b.client_token||"").trim();
 
     if(!customer_name||!/^[0-9]{10}$/.test(String(mobile))||!address||
        typeof lat!=="number"||typeof lng!=="number"||!Array.isArray(items)||!items.length){
       return json({error:"Missing or invalid order details"},400);
+    }
+    if(clientToken && !/^[A-Za-z0-9_-]{12,100}$/.test(clientToken)){
+      return json({error:"Invalid order request token"},400);
+    }
+    if(!["COD","UPI"].includes(paymentMethod) && paymentMethod!=="COD_OR_UPI_TO_DELIVERY_BOY"){
+      return json({error:"Invalid payment method"},400);
+    }
+    if(clientToken){
+      const existing=await env.DB.prepare(`SELECT o.*,t.tracking_token FROM orders o LEFT JOIN order_tracking t ON t.order_id=o.id WHERE o.client_token=? LIMIT 1`).bind(clientToken).first();
+      if(existing){
+        let itemsExisting=[]; try{itemsExisting=JSON.parse(existing.items_json||"[]")}catch{}
+        return json({ok:true,order_id:existing.id,tracking_token:existing.tracking_token||"",distance_km:Number(existing.distance_km||0),delivery_charge:Number(existing.delivery_charge||0),food_total:Number(existing.food_total||0),grand_total:Number(existing.grand_total||0),status:existing.status||"NEW",duplicate:true,assignment:{assigned:false,reason:"ALREADY_CREATED"},items:itemsExisting});
+      }
     }
 
     const d=dist(CAFE_LAT,CAFE_LNG,lat,lng);
@@ -996,13 +995,21 @@ async function api(request,env,url){
     await env.DB.prepare(`
       INSERT INTO orders(
         id,created_at,customer_name,mobile,address,lat,lng,distance_km,
-        delivery_charge,food_total,grand_total,payment_method,payment_status,status,items_json
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        delivery_charge,food_total,grand_total,payment_method,payment_status,status,items_json,client_token
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(id,now,customer_name,String(mobile),address,lat,lng,Number(d.toFixed(3)),
-      delivery,food,food+delivery,"COD_OR_UPI_TO_DELIVERY_BOY","UNPAID","NEW",JSON.stringify(items)).run();
+      delivery,food,food+delivery,paymentMethod,"UNPAID","NEW",JSON.stringify(items),clientToken||null).run();
 
     await env.DB.prepare(`INSERT INTO order_tracking(order_id,tracking_token) VALUES(?,?)`).bind(id,tracking_token).run();
-    const assignment=await autoAssignOrder(env,id,lat,lng);
+    // IMPORTANT: the order is already safely stored. Assignment is secondary;
+    // never turn a successful order into a client-side "order failed" error.
+    let assignment={assigned:false,reason:"PENDING_ASSIGNMENT"};
+    try{
+      assignment=await autoAssignOrder(env,id,lat,lng);
+    }catch(error){
+      console.error('ORDER ASSIGN ERROR',id,error?.stack||error);
+      assignment={assigned:false,reason:"ASSIGNMENT_RETRY_PENDING"};
+    }
 
     return json({ok:true,order_id:id,tracking_token,distance_km:Number(d.toFixed(2)),
       delivery_charge:delivery,food_total:food,grand_total:food+delivery,status:"NEW",assignment});
@@ -1024,6 +1031,10 @@ async function api(request,env,url){
     }
 
     await ensureDeliveryTables(env);
+    if(deliverySession){
+      // Refreshing/logging in is also a recovery point for older unassigned orders.
+      try{ await assignPendingOrders(env); }catch(error){ console.error('REFRESH ASSIGN ERROR',error?.stack||error); }
+    }
     const limit=Math.min(Number(url.searchParams.get("limit")||100),200);
 
     let rows;
@@ -1061,42 +1072,22 @@ async function api(request,env,url){
     })});
   }
 
-  // Customer order lookup. Keep /api/my-orders compatible with the website
-  // while /api/track remains the public tracking endpoint.
-  const mm=url.pathname.match(/^\/api\/my-orders\/([^/]+)$/);
-  if(mm&&request.method==="GET"){
-    const row=await env.DB.prepare(`
-      SELECT o.id,o.created_at,o.customer_name,o.mobile,o.address,o.status,
-             o.food_total,o.delivery_charge,o.grand_total,o.payment_method,o.payment_status,
-             o.distance_km,t.lat,t.lng,t.updated_at
-      FROM orders o JOIN order_tracking t ON t.order_id=o.id
-      WHERE t.tracking_token=?
-    `).bind(mm[1]).first();
-    if(!row) return json({error:"Order tracking not found"},404);
-    return json({ok:true,order:{
-      id:row.id,created_at:row.created_at,customer_name:row.customer_name,mobile:row.mobile,
-      address:row.address,status:row.status,food_total:row.food_total,
-      delivery_charge:row.delivery_charge,grand_total:row.grand_total,
-      payment_method:row.payment_method,payment_status:row.payment_status,
-      distance_km:row.distance_km,
-      location:row.lat!=null?{lat:row.lat,lng:row.lng,updated_at:row.updated_at}:null
-    }});
-  }
-
   // Track
   const tm=url.pathname.match(/^\/api\/track\/([^/]+)$/);
   if(tm&&request.method==="GET"){
     const row=await env.DB.prepare(`
-      SELECT o.id,o.created_at,o.customer_name,o.status,o.food_total,o.delivery_charge,
-             o.grand_total,o.distance_km,t.lat,t.lng,t.updated_at
+      SELECT o.id,o.created_at,o.customer_name,o.mobile,o.address,o.status,
+             o.food_total,o.delivery_charge,o.grand_total,o.distance_km,
+             o.payment_method,o.payment_status,t.lat,t.lng,t.updated_at
       FROM orders o JOIN order_tracking t ON t.order_id=o.id
       WHERE t.tracking_token=?
     `).bind(tm[1]).first();
     if(!row) return json({error:"Tracking link invalid or expired"},404);
     return json({ok:true,order:{
-      id:row.id,created_at:row.created_at,customer_name:row.customer_name,status:row.status,
-      food_total:row.food_total,delivery_charge:row.delivery_charge,grand_total:row.grand_total,
-      distance_km:row.distance_km,
+      id:row.id,created_at:row.created_at,customer_name:row.customer_name,mobile:row.mobile,
+      address:row.address,status:row.status,food_total:row.food_total,
+      delivery_charge:row.delivery_charge,grand_total:row.grand_total,distance_km:row.distance_km,
+      payment_method:row.payment_method,payment_status:row.payment_status,
       location:row.lat!=null?{lat:row.lat,lng:row.lng,updated_at:row.updated_at}:null
     }});
   }
