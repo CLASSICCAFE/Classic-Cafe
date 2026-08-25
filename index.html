@@ -46,7 +46,7 @@
 </style></head><body><div class="loadingOverlay" id="loading"><div class="loadingBox"><span class="loadingIcon">⏳</span><b>Loading...</b><div class="small">Please wait</div></div></div>
 <header><div class="nav"><a href="#" style="text-decoration:none"><div class="logo">Classic</div><div class="cafe">CAFE</div></a><div class="navlinks"><a href="#menu">Menu</a><a href="#about">About</a><a href="#myorders">My Orders</a><a href="tel:+918529625875">📞 Call</a><a class="whatsappTop" href="https://wa.me/918529625875?text=Hello%20Classic%20Cafe%2C%20I%20want%20to%20place%20an%20order." target="_blank" rel="noopener">💬 WhatsApp</a><button class="orderbtn mobileOrder" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🛒 Order Now</button></div></div></header>
 <main class="wrap">
-<section class="hero"><div class="heroCard"><div class="heroInner"><div class="badges"><div class="badge"><span class="badgeIcon">🍔</span><span>PREMIUM<br>FAST FOOD</span></div><div class="badge"><span class="badgeIcon">🥤</span><span>SPECIAL<br>SHAKES</span></div><div class="badge"><span class="badgeIcon">💵</span><span>COD / UPI<br>AVAILABLE</span></div><div class="badge"><span class="badgeIcon">🕐</span><span>12 PM – 12 AM<br>OPEN DAILY</span></div></div><h1 class="heroTitle">Good Food.<br><span>Good Mood.</span></h1><div class="heroLine"></div><p class="heroText">Classic Cafe, Jodhpur — premium fast food, loaded pizzas, burgers, sandwiches, crispy snacks, rich shakes and ice cream. Order online with COD or UPI payment.</p><div class="heroActions"><button class="heroAction" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🍽️ Browse Menu</button><button class="heroAction green" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🛒 Order Online</button></div></div></div></section>
+<section class="hero"><div class="heroCard"><div class="heroInner"><div class="badges"><div class="badge"><span class="badgeIcon">🍔</span><span>PREMIUM<br>FAST FOOD</span></div><div class="badge"><span class="badgeIcon">🥤</span><span>SPECIAL<br>SHAKES</span></div><div class="badge"><span class="badgeIcon">💵</span><span>COD / UPI<br>AVAILABLE</span></div><div class="badge"><span class="badgeIcon">🕐</span><span><span id="heroDeliveryTime">Loading…</span><br>OPEN DAILY</span></div></div><h1 class="heroTitle">Good Food.<br><span>Good Mood.</span></h1><div class="heroLine"></div><p class="heroText">Classic Cafe, Jodhpur — premium fast food, loaded pizzas, burgers, sandwiches, crispy snacks, rich shakes and ice cream. Order online with COD or UPI payment.</p><div class="heroActions"><button class="heroAction" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🍽️ Browse Menu</button><button class="heroAction green" onclick="document.getElementById('menu').scrollIntoView({behavior:'smooth'})">🛒 Order Online</button></div></div></div></section>
 <section class="section serviceSection"><div class="serviceGrid"><div class="service"><div class="serviceIcon">🛒</div><div><h3>Website Ordering</h3><p>Select items, check delivery charge and place your order directly from your phone.</p><a class="serviceBtn" href="#menu">Order Online →</a></div></div></div></section>
 <section class="section benefitsSection" style="padding-top:0"><div class="benefits"><div class="benefit"><div class="benefitIcon">🛵</div><b>Fast Delivery</b><span id="benefitRadius">Within 6 KM</span></div><div class="benefit"><div class="benefitIcon">🛡️</div><b>Safe & Hygienic</b><span>Fresh & Clean</span></div><div class="benefit"><div class="benefitIcon">⭐</div><b>Best Quality</b><span>Always</span></div><div class="benefit"><div class="benefitIcon">🎧</div><b>Support</b><span id="benefitTime">11 AM – 11:50 PM</span></div></div></section>
 <section class="section" id="menu"><div class="sectionTitle"><h2>🍕 Explore Our Full Menu</h2><p>Choose a category below — every item and price is listed for easy ordering.</p></div><div class="menuTabs" id="tabs"></div><div id="menuList"></div></section>
@@ -74,7 +74,7 @@ function formatMinutes(total){
 }
 async function syncPublicSettings(){
   try{
-    const r=await fetch('/api/settings',{cache:'no-store'});
+    const r=await fetch('/api/public-settings',{cache:'no-store'});
     const d=await r.json();
     const s=d.settings||{};
     RADIUS=Number(s.delivery_radius??5)||5;
@@ -86,15 +86,19 @@ async function syncPublicSettings(){
     const bt=document.getElementById('benefitTime');
     const mt=document.getElementById('modalDeliveryTime');
     const mr=document.getElementById('modalRadius');
+    const hr=document.getElementById('heroDeliveryTime');
     if(br)br.textContent=`Within ${RADIUS} KM`;
     if(bt)bt.textContent=timeText;
     if(mt)mt.textContent=timeText;
     if(mr)mr.textContent=RADIUS;
+    if(hr)hr.textContent=timeText;
   }catch(e){
     const br=document.getElementById('benefitRadius');
     const bt=document.getElementById('benefitTime');
+    const hr=document.getElementById('heroDeliveryTime');
     if(br)br.textContent=`Within ${RADIUS} KM`;
     if(bt)bt.textContent=`${formatMinutes(DELIVERY_START_MIN)} – ${formatMinutes(DELIVERY_END_MIN)}`;
+    if(hr)hr.textContent=`${formatMinutes(DELIVERY_START_MIN)} – ${formatMinutes(DELIVERY_END_MIN)}`;
   }
 }
 
