@@ -325,11 +325,18 @@ async function adminSessionValid(request,env){
   }
 }
 
+function adminKeyValid(key,env){
+  const k=String(key||"").trim();
+  if(!k) return false;
+  return (!!env.ADMIN_KEY && k===String(env.ADMIN_KEY).trim()) ||
+         (!!env.ADMIN_KEY_2 && k===String(env.ADMIN_KEY_2).trim());
+}
+
 async function authorized(request,env,type){
   if(type==="admin"){
     if(await adminSessionValid(request,env)) return true;
     const key=request.headers.get("x-admin-key");
-    return !!env.ADMIN_KEY && !!key && key===env.ADMIN_KEY;
+    return adminKeyValid(key,env);
   }
 
   if(type==="delivery"){
@@ -476,10 +483,10 @@ async function api(request,env,url){
   await ensureCoreTables(env);
   await ensureDeliveryTables(env);
 
-  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
+  // Admin session bootstrap: either ADMIN_KEY or ADMIN_KEY_2 is accepted.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
     const key=request.headers.get("x-admin-key");
-    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
+    if(!adminKeyValid(key,env)){
       return json({error:"Invalid Admin Key."},401);
     }
     await ensureCoreTables(env);
