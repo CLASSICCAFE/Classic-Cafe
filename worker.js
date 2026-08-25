@@ -325,18 +325,11 @@ async function adminSessionValid(request,env){
   }
 }
 
-function adminKeyValid(key,env){
-  const k=String(key||"").trim();
-  if(!k) return false;
-  return (!!env.ADMIN_KEY && k===String(env.ADMIN_KEY).trim()) ||
-         (!!env.ADMIN_KEY_2 && k===String(env.ADMIN_KEY_2).trim());
-}
-
 async function authorized(request,env,type){
   if(type==="admin"){
     if(await adminSessionValid(request,env)) return true;
     const key=request.headers.get("x-admin-key");
-    return adminKeyValid(key,env);
+    return !!env.ADMIN_KEY && !!key && key===env.ADMIN_KEY;
   }
 
   if(type==="delivery"){
@@ -396,57 +389,41 @@ async function getAssignDistance(env){
   return Math.min(Math.max(Number(s.auto_assign_distance)||DEFAULT_ASSIGN_DISTANCE,0.5),10);
 }
 
+async function getLatestLoggedInDeliveryBoy(env){
+  await ensureDeliveryTables(env);
+  const row=await env.DB.prepare(`
+    SELECT s.delivery_boy_id,b.name,b.mobile,s.created_at
+    FROM delivery_sessions s
+    JOIN delivery_boys b ON b.id=s.delivery_boy_id
+    WHERE s.expires_at>? AND b.active=1
+    ORDER BY s.created_at DESC
+    LIMIT 1
+  `).bind(new Date().toISOString()).first();
+  return row||null;
+}
+
 async function autoAssignOrder(env,orderId,lat,lng){
   await ensureDeliveryTables(env);
-  const max=await getAssignDistance(env);
-  const boys=await env.DB.prepare(`
-    SELECT id,name FROM delivery_boys WHERE active=1 ORDER BY id ASC
-  `).all();
 
-  if(!boys.results.length) return {assigned:false,reason:"NO_DELIVERY_BOY"};
-
-  const active=await env.DB.prepare(`
-    SELECT da.delivery_boy_id,o.lat,o.lng,o.status
-    FROM delivery_assignments da JOIN orders o ON o.id=da.order_id
-    WHERE o.status IN('NEW','ACCEPTED','PREPARING')
-  `).all();
-
-  const candidates=[];
-  for(const boy of boys.results){
-    const list=active.results.filter(x=>x.delivery_boy_id===boy.id);
-    for(const o of list){
-      const a=Number(o.lat),b=Number(o.lng);
-      if(!Number.isFinite(a)||!Number.isFinite(b)) continue;
-      const d=dist(a,b,lat,lng);
-      if(d<=max) candidates.push({boyId:boy.id,distance:d,activeCount:list.length});
-    }
+  // IMPORTANT: a new order goes only to a currently logged-in Delivery Boy.
+  // If multiple boys are logged in, the most recently logged-in active session wins.
+  const loggedIn=await getLatestLoggedInDeliveryBoy(env);
+  if(!loggedIn){
+    return {assigned:false,reason:"NO_LOGGED_IN_DELIVERY_BOY"};
   }
-
-  let chosen=null, rule="";
-  if(candidates.length){
-    candidates.sort((a,b)=>a.activeCount-b.activeCount||a.distance-b.distance);
-    chosen=candidates[0]; rule="NEARBY_ORDER";
-  }else{
-    const counts={};
-    for(const x of active.results) counts[x.delivery_boy_id]=(counts[x.delivery_boy_id]||0)+1;
-    const free=boys.results.filter(b=>!counts[b.id]).sort((a,b)=>a.id.localeCompare(b.id));
-    if(free.length){ chosen={boyId:free[0].id,distance:null}; rule="FREE_DELIVERY_BOY"; }
-  }
-
-  if(!chosen) return {assigned:false,reason:"NO_SUITABLE_DELIVERY_BOY"};
 
   await env.DB.prepare(`
     INSERT INTO delivery_assignments(order_id,delivery_boy_id,assigned_at)
     VALUES(?,?,?)
     ON CONFLICT(order_id) DO UPDATE SET
       delivery_boy_id=excluded.delivery_boy_id,assigned_at=excluded.assigned_at
-  `).bind(orderId,chosen.boyId,new Date().toISOString()).run();
+  `).bind(orderId,loggedIn.delivery_boy_id,new Date().toISOString()).run();
 
   return {
     assigned:true,
-    delivery_boy_id:chosen.boyId,
-    distance_km:chosen.distance==null?null:Number(chosen.distance.toFixed(2)),
-    rule
+    delivery_boy_id:loggedIn.delivery_boy_id,
+    distance_km:null,
+    rule:"LOGGED_IN_DELIVERY_BOY"
   };
 }
 
@@ -483,10 +460,10 @@ async function api(request,env,url){
   await ensureCoreTables(env);
   await ensureDeliveryTables(env);
 
-  // Admin session bootstrap: either ADMIN_KEY or ADMIN_KEY_2 is accepted.
+  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
     const key=request.headers.get("x-admin-key");
-    if(!adminKeyValid(key,env)){
+    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
       return json({error:"Invalid Admin Key."},401);
     }
     await ensureCoreTables(env);
@@ -811,6 +788,16 @@ async function api(request,env,url){
     return json({ok:true,delivery_boy:row});
   }
 
+  // Delivery logout: invalidate the server-side session immediately.
+  if(url.pathname==="/api/delivery/logout" && request.method==="POST"){
+    const session=request.headers.get("x-delivery-session");
+    if(session){
+      await ensureDeliveryTables(env);
+      await env.DB.prepare(`DELETE FROM delivery_sessions WHERE token=?`).bind(session).run();
+    }
+    return json({ok:true});
+  }
+
   // Delivery stats
   if(url.pathname==="/api/delivery/stats" && request.method==="GET"){
     if(!await authorized(request,env,"delivery")) return json({error:"Unauthorized"},401);
@@ -887,12 +874,22 @@ async function api(request,env,url){
     if(deliveryAllowed&&!adminAllowed){
       const boyId=await getDeliveryBoyId(request,env);
       if(!boyId) return json({error:"Delivery Boy not found"},401);
-      rows=await env.DB.prepare(`
-        SELECT o.*,da.delivery_boy_id FROM orders o
-        JOIN delivery_assignments da ON da.order_id=o.id
-        WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
-        ORDER BY o.created_at ASC LIMIT ?
-      `).bind(boyId,limit).all();
+      const history=url.searchParams.get("history")==="1";
+      if(history){
+        rows=await env.DB.prepare(`
+          SELECT o.*,da.delivery_boy_id FROM orders o
+          JOIN delivery_assignments da ON da.order_id=o.id
+          WHERE da.delivery_boy_id=? AND o.status='DELIVERED'
+          ORDER BY o.created_at DESC LIMIT ?
+        `).bind(boyId,limit).all();
+      }else{
+        rows=await env.DB.prepare(`
+          SELECT o.*,da.delivery_boy_id FROM orders o
+          JOIN delivery_assignments da ON da.order_id=o.id
+          WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
+          ORDER BY o.created_at ASC LIMIT ?
+        `).bind(boyId,limit).all();
+      }
     }else{
       rows=await env.DB.prepare(`
         SELECT o.*,da.delivery_boy_id FROM orders o
