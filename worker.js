@@ -657,7 +657,7 @@ async function api(request,env,url){
     if(!boy) return json({error:"Delivery Boy not found."},404);
     if(!Number(boy.active)) return json({error:"Your Delivery Boy account is disabled."},403);
 
-    const session=token(), exp=new Date(Date.now()+12*60*60*1000).toISOString();
+    const session=token(), exp=new Date(Date.now()+24*60*60*1000).toISOString();
     await env.DB.prepare(`DELETE FROM delivery_sessions WHERE delivery_boy_id=? OR expires_at<=?`)
       .bind(boy.id,new Date().toISOString()).run();
     await env.DB.prepare(`
@@ -666,7 +666,9 @@ async function api(request,env,url){
     `).bind(session,boy.id,exp,new Date().toISOString()).run();
     await env.DB.prepare(`UPDATE delivery_otp_requests SET used=1 WHERE id=?`).bind(row.id).run();
 
-    return json({ok:true,message:"Delivery Boy login successful.",session_token:session,expires_at:exp,delivery_boy:{id:boy.id,name:boy.name,mobile:boy.mobile}});
+    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE id<=?`).bind(boy.id).first();
+    const sr_no=Number(srRow?.sr_no||0);
+    return json({ok:true,message:"Delivery Boy login successful.",session_token:session,expires_at:exp,delivery_boy:{id:boy.id,name:boy.name,mobile:boy.mobile,sr_no}});
   }
 
   if(url.pathname==="/api/health" && request.method==="GET"){
@@ -810,7 +812,10 @@ async function api(request,env,url){
       WHERE da.delivery_boy_id=? AND o.status='DELIVERED'
       AND date(o.created_at,'localtime')=date('now','localtime')
     `).bind(boyId).first();
-    return json({ok:true,completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0)});
+    const boy=await env.DB.prepare(`SELECT id,name,mobile,active FROM delivery_boys WHERE id=? LIMIT 1`).bind(boyId).first();
+    if(!boy) return json({error:"Delivery Boy not found"},401);
+    const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE id<=?`).bind(boy.id).first();
+    return json({ok:true,completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
   }
 
   // Create order
@@ -864,14 +869,24 @@ async function api(request,env,url){
 
   // Get orders
   if(url.pathname==="/api/orders" && request.method==="GET"){
+    const deliverySession=String(request.headers.get("x-delivery-session")||"").trim();
     const adminAllowed=await authorized(request,env,"admin");
     const deliveryAllowed=await authorized(request,env,"delivery");
-    if(!adminAllowed&&!deliveryAllowed) return json({error:"Unauthorized"},401);
+
+    // IMPORTANT: /delivery requests must always be scoped to the logged-in
+    // Delivery Boy, even if the same browser also has an Admin session cookie.
+    // Otherwise adminAllowed=true could expose all orders on the Delivery page.
+    if(deliverySession){
+      if(!deliveryAllowed) return json({error:"Delivery session expired. Please login again."},401);
+    }else if(!adminAllowed){
+      return json({error:"Unauthorized"},401);
+    }
+
     await ensureDeliveryTables(env);
     const limit=Math.min(Number(url.searchParams.get("limit")||100),200);
 
     let rows;
-    if(deliveryAllowed&&!adminAllowed){
+    if(deliverySession){
       const boyId=await getDeliveryBoyId(request,env);
       if(!boyId) return json({error:"Delivery Boy not found"},401);
       const history=url.searchParams.get("history")==="1";
