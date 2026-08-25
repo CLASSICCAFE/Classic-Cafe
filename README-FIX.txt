@@ -1,20 +1,7 @@
-Classic Cafe – Delivery/Admin Fix v3
+Classic Cafe V14 - Admin 24 Hour Session
 
-1. Delivery Boy OTP login session is now valid for 24 hours.
-2. Closing the browser does NOT require OTP again while the 24-hour server session is valid, because the dashboard keeps the session token in browser localStorage.
-3. Delivery Boy logout immediately invalidates the server session.
-4. When the Delivery Dashboard opens with a valid session, it automatically restores the Delivery Boy name, mobile and Sr. No.
-5. Delivery Dashboard shows only that logged-in boy’s active orders; DELIVERED/CANCELLED orders are excluded.
-6. Admin Dashboard → Delivery Boys now shows Sr. No. for each boy.
-7. Sr. No. follows the existing Delivery Boy registration/ID order (DB001, DB002, ...).
-
-Deploy these files together:
-- worker.js
-- delivery.html
-- admin (2).html
-
-After deployment:
-- Open /delivery and do one OTP login.
-- Close browser completely and reopen /delivery within 24 hours: it should open directly.
-- Use Logout when you want OTP to be required again.
-- Hard refresh (Ctrl+F5) after deployment.
+1. worker.js: Admin session ab exactly 24 hours valid hai. Cookie bhi 24 hours ka hai. Browser close/reopen ke baad valid session automatically dashboard khol dega. Logout se server-side session turant delete hoga.
+2. admin.html: Page load par existing secure admin cookie check hoti hai; valid ho to Admin Key dobara nahi maangi jayegi.
+3. Admin name: Cloudflare Worker Runtime Variable me ADMIN_NAME add karein, value jaise "Ashok" ya "Classic Cafe Owner". Login response me ye name dashboard header me dikhega. Agar ADMIN_NAME set nahi hai to default "Classic Cafe Admin" dikhega.
+4. ADMIN_KEY wahi existing secret rahega. ADMIN_NAME ko secret banana zaroori nahi hai; Runtime Variable ke roop me add karein.
+5. Deploy ke baad browser me Ctrl+F5 / hard refresh karein.
