@@ -468,7 +468,7 @@ async function api(request,env,url){
     }
     await ensureCoreTables(env);
     const session=token();
-    const expires=new Date(Date.now()+7*24*60*60*1000).toISOString();
+    const expires=new Date(Date.now()+24*60*60*1000).toISOString();
     await env.DB.prepare(`
       INSERT INTO admin_sessions(token,expires_at,created_at)
       VALUES(?,?,?)
@@ -476,13 +476,14 @@ async function api(request,env,url){
 
     return new Response(JSON.stringify({
       ok:true,
-      expires_at:expires
+      expires_at:expires,
+      admin_name:String(env.ADMIN_NAME||"Classic Cafe Admin").trim()
     }),{
       status:200,
       headers:{
         "content-type":"application/json; charset=utf-8",
         "cache-control":"no-store",
-        "set-cookie":`classic_admin_session=${encodeURIComponent(session)}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`
+        "set-cookie":`classic_admin_session=${encodeURIComponent(session)}; Max-Age=86400; Path=/; HttpOnly; Secure; SameSite=Lax`
       }
     });
   }
