@@ -430,8 +430,32 @@ async function getLoggedInDeliveryBoys(env){
   return rows.results||[];
 }
 
+async function assignPendingOrdersForLoggedIn(env){
+  await ensureDeliveryTables(env);
+  const pending=await env.DB.prepare(`
+    SELECT o.id,o.lat,o.lng
+    FROM orders o
+    LEFT JOIN delivery_assignments da ON da.order_id=o.id
+    WHERE da.order_id IS NULL
+      AND o.status IN ('NEW','ACCEPTED','PREPARING','OUT_FOR_DELIVERY')
+    ORDER BY o.created_at ASC
+    LIMIT 100
+  `).all();
+  let assigned=0;
+  for(const o of (pending.results||[])){
+    const r=await autoAssignOrder(env,o.id,o.lat,o.lng);
+    if(r?.assigned) assigned++;
+  }
+  return assigned;
+}
+
 async function autoAssignOrder(env,orderId,lat,lng){
   await ensureDeliveryTables(env);
+  const already=await env.DB.prepare(`SELECT delivery_boy_id FROM delivery_assignments WHERE order_id=? LIMIT 1`).bind(orderId).first();
+  if(already?.delivery_boy_id){
+    const boy=await env.DB.prepare(`SELECT id,name FROM delivery_boys WHERE id=? LIMIT 1`).bind(already.delivery_boy_id).first();
+    return {assigned:true,delivery_boy_id:already.delivery_boy_id,delivery_boy_name:boy?.name||null,rule:'ALREADY_ASSIGNED'};
+  }
 
   // Only currently logged-in + active Delivery Boys can receive new orders.
   const loggedIn=await getLoggedInDeliveryBoys(env);
@@ -920,6 +944,9 @@ async function api(request,env,url){
     await ensureDeliveryTables(env);
     const boyId=await getDeliveryBoyId(request,env);
     if(!boyId) return json({error:"Delivery Boy not found"},401);
+    // A new order may have been created while no rider was logged in.
+    // When any active rider logs in/refreshes, assign all still-unassigned active orders.
+    const pendingAssigned=await assignPendingOrdersForLoggedIn(env);
     const row=await env.DB.prepare(`
       SELECT COUNT(*) AS completed_today,COALESCE(SUM(o.delivery_charge),0) AS earnings_today
       FROM orders o JOIN delivery_assignments da ON da.order_id=o.id
@@ -929,7 +956,7 @@ async function api(request,env,url){
     const boy=await env.DB.prepare(`SELECT id,name,mobile,active FROM delivery_boys WHERE id=? LIMIT 1`).bind(boyId).first();
     if(!boy) return json({error:"Delivery Boy not found"},401);
     const srRow=await env.DB.prepare(`SELECT COUNT(*) AS sr_no FROM delivery_boys WHERE active=1 AND id<=?`).bind(boy.id).first();
-    return json({ok:true,completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
+    return json({ok:true,pending_assigned:Number(pendingAssigned||0),completed_today:Number(row?.completed_today||0),earnings_today:Number(row?.earnings_today||0),delivery_boy:{...boy,sr_no:Number(srRow?.sr_no||0)}});
   }
 
   // Create order
@@ -1032,6 +1059,28 @@ async function api(request,env,url){
       let items=[]; try{items=JSON.parse(r.items_json||"[]")}catch{}
       return {...r,items};
     })});
+  }
+
+  // Customer order lookup. Keep /api/my-orders compatible with the website
+  // while /api/track remains the public tracking endpoint.
+  const mm=url.pathname.match(/^\/api\/my-orders\/([^/]+)$/);
+  if(mm&&request.method==="GET"){
+    const row=await env.DB.prepare(`
+      SELECT o.id,o.created_at,o.customer_name,o.mobile,o.address,o.status,
+             o.food_total,o.delivery_charge,o.grand_total,o.payment_method,o.payment_status,
+             o.distance_km,t.lat,t.lng,t.updated_at
+      FROM orders o JOIN order_tracking t ON t.order_id=o.id
+      WHERE t.tracking_token=?
+    `).bind(mm[1]).first();
+    if(!row) return json({error:"Order tracking not found"},404);
+    return json({ok:true,order:{
+      id:row.id,created_at:row.created_at,customer_name:row.customer_name,mobile:row.mobile,
+      address:row.address,status:row.status,food_total:row.food_total,
+      delivery_charge:row.delivery_charge,grand_total:row.grand_total,
+      payment_method:row.payment_method,payment_status:row.payment_status,
+      distance_km:row.distance_km,
+      location:row.lat!=null?{lat:row.lat,lng:row.lng,updated_at:row.updated_at}:null
+    }});
   }
 
   // Track
