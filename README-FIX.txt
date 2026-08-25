@@ -1,26 +1,23 @@
-CLASSIC CAFE FIX v4
+CLASSIC CAFE FIX v5
+
+This v5 keeps the uploaded worker/admin files and fixes the Delivery dashboard
+session restore.
 
 Fixed:
-- ADMIN_KEY + ADMIN_KEY_2 both accepted.
-- ADMIN_NAME + ADMIN_NAME_2 shown according to the key used.
-- Admin session is server-side and valid 24 hours; browser close does not log out.
-- Admin Logout immediately invalidates the session.
-- Admin name is restored after browser reopen.
-- Delivery active orders exclude DELIVERED/CANCELLED at the API and UI level.
-- Delivery dashboard shows Delivery Boy name + Sr. No.
+- After browser close/reopen, the existing 24-hour Delivery Boy session is
+  validated through /api/delivery/stats.
+- The returned Delivery Boy profile is now restored into the dashboard:
+  Name, Sr. No., Mobile.
+- Active Orders remain limited to NEW/ACCEPTED/PREPARING/OUT_FOR_DELIVERY.
+- Delivered Orders remain limited to DELIVERED orders assigned to the logged-in
+  Delivery Boy.
 
 Cloudflare variables:
 ADMIN_KEY       = Secret
 ADMIN_KEY_2     = Secret
-ADMIN_NAME      = Text (example: Ashok)
-ADMIN_NAME_2    = Text (example: Suresh)
+ADMIN_NAME      = Text
+ADMIN_NAME_2    = Text
 DELIVERY_KEY    = Secret
 
-Keep D1 binding name: DB
-
-Deploy all 3 files together:
-worker.js
-admin.html
-delivery.html
-
-After deployment, test in a fresh InPrivate/Incognito window or hard refresh.
+Deploy worker.js, admin.html and delivery.html together.
+After deployment, hard refresh or use an Incognito window for testing.
