@@ -182,16 +182,9 @@ async function ensureCoreTables(env){
       name TEXT NOT NULL UNIQUE,
       category TEXT,
       available INTEGER DEFAULT 1,
-      price REAL DEFAULT 0,
-      discount_percent REAL DEFAULT 0,
       updated_at TEXT NOT NULL
     )
   `).run();
-
-  await addMissingColumns(env,"menu_items",{
-    price:"REAL DEFAULT 0",
-    discount_percent:"REAL DEFAULT 0"
-  });
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS admin_sessions(
@@ -200,12 +193,6 @@ async function ensureCoreTables(env){
       created_at TEXT NOT NULL
     )
   `).run();
-  // Upgrade older D1 installations without destroying existing sessions/data.
-  await addMissingColumns(env,"admin_sessions",{
-    token:"TEXT",
-    expires_at:"TEXT",
-    created_at:"TEXT"
-  });
 
   // These are starter controls. Existing/real menu items can be added from Admin.
   const starters=[
@@ -283,45 +270,8 @@ async function ensureDeliveryTables(env){
     mobile:"TEXT",
     access_key:"TEXT",
     active:"INTEGER DEFAULT 1",
-    created_at:"TEXT",
-    // Legacy columns from the earlier Delivery Boy schema.
-    // They are kept for backward compatibility with the existing D1 table.
-    phone:"TEXT",
-    delivery_key:"TEXT",
-    active_at:"INTEGER DEFAULT 1"
+    created_at:"TEXT"
   });
-
-  // Migrate/synchronise the old column names with the new names.
-  // This is important because an existing D1 table is NOT replaced by
-  // CREATE TABLE IF NOT EXISTS, and older NOT NULL columns can otherwise
-  // cause "Worker exception" on a new Delivery Boy insert.
-  const deliveryCols=await tableColumns(env,"delivery_boys");
-  if(deliveryCols.has("phone") && deliveryCols.has("mobile")){
-    await env.DB.prepare(`
-      UPDATE delivery_boys
-      SET mobile=phone
-      WHERE (mobile IS NULL OR trim(mobile)='') AND phone IS NOT NULL AND trim(phone)<>''
-    `).run();
-  }
-  if(deliveryCols.has("delivery_key") && deliveryCols.has("access_key")){
-    await env.DB.prepare(`
-      UPDATE delivery_boys
-      SET access_key=delivery_key
-      WHERE (access_key IS NULL OR trim(access_key)='') AND delivery_key IS NOT NULL AND trim(delivery_key)<>''
-    `).run();
-    await env.DB.prepare(`
-      UPDATE delivery_boys
-      SET delivery_key=access_key
-      WHERE (delivery_key IS NULL OR trim(delivery_key)='') AND access_key IS NOT NULL AND trim(access_key)<>''
-    `).run();
-  }
-  if(deliveryCols.has("active_at") && deliveryCols.has("active")){
-    await env.DB.prepare(`
-      UPDATE delivery_boys
-      SET active_at=active
-      WHERE active IS NOT NULL
-    `).run();
-  }
   await addMissingColumns(env,"delivery_otp_requests",{
     mobile:"TEXT",
     otp:"TEXT",
@@ -339,25 +289,13 @@ async function ensureDeliveryTables(env){
 
   if(env.DELIVERY_KEY){
     const x=await env.DB.prepare(`
-      SELECT id FROM delivery_boys
-      WHERE access_key=? OR delivery_key=?
-      LIMIT 1
-    `).bind(env.DELIVERY_KEY,env.DELIVERY_KEY).first();
-
-    if(x){
-      // Make sure the legacy and current key columns stay in sync.
-      if(deliveryCols.has("access_key")) await env.DB.prepare(`UPDATE delivery_boys SET access_key=? WHERE id=?`).bind(env.DELIVERY_KEY,x.id).run();
-      if(deliveryCols.has("delivery_key")) await env.DB.prepare(`UPDATE delivery_boys SET delivery_key=? WHERE id=?`).bind(env.DELIVERY_KEY,x.id).run();
-    }else{
-      const now=new Date().toISOString();
+      SELECT id FROM delivery_boys WHERE access_key=? LIMIT 1
+    `).bind(env.DELIVERY_KEY).first();
+    if(!x){
       await env.DB.prepare(`
-        INSERT INTO delivery_boys(
-          id,name,mobile,access_key,active,created_at,phone,delivery_key,active_at
-        )
-        VALUES(?,?,?,?,?,?,?,?,?)
-      `).bind(
-        "DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,now,"",env.DELIVERY_KEY,1
-      ).run();
+        INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
+        VALUES(?,?,?,?,?,?)
+      `).bind("DB001","Delivery Boy 1","",env.DELIVERY_KEY,1,new Date().toISOString()).run();
     }
   }
 }
@@ -390,11 +328,8 @@ async function adminSessionValid(request,env){
 async function authorized(request,env,type){
   if(type==="admin"){
     if(await adminSessionValid(request,env)) return true;
-    const key=String(request.headers.get("x-admin-key")||"").trim();
-    return !!key && (
-      (!!env.ADMIN_KEY && key===String(env.ADMIN_KEY).trim()) ||
-      (!!env.ADMIN_KEY_2 && key===String(env.ADMIN_KEY_2).trim())
-    );
+    const key=request.headers.get("x-admin-key");
+    return !!env.ADMIN_KEY && !!key && key===env.ADMIN_KEY;
   }
 
   if(type==="delivery"){
@@ -511,16 +446,10 @@ async function autoAssignOrder(env,orderId,lat,lng){
 async function publicMenu(env){
   await ensureCoreTables(env);
   const rows=await env.DB.prepare(`
-    SELECT id,name,category,available,price,discount_percent,updated_at
+    SELECT id,name,category,available,updated_at
     FROM menu_items ORDER BY category,name
   `).all();
-  return rows.results.map(x=>({
-    ...x,
-    available:Number(x.available)===1,
-    price:Number(x.price||0),
-    discount_percent:Math.min(100,Math.max(0,Number(x.discount_percent)||0)),
-    hidden:false
-  }));
+  return rows.results.map(x=>({...x,available:Number(x.available)===1,hidden:false}));
 }
 
 async function checkItemsAvailable(env,items){
@@ -547,15 +476,10 @@ async function api(request,env,url){
   await ensureCoreTables(env);
   await ensureDeliveryTables(env);
 
-  // Admin session bootstrap: ADMIN_KEY and ADMIN_KEY_2 both have full Admin access.
-  // Either key can create the same secure Admin session.
+  // Admin session bootstrap: enter ADMIN_KEY once, then use a secure cookie.
   if(url.pathname==="/api/admin/session" && request.method==="POST"){
-    const key=String(request.headers.get("x-admin-key")||"").trim();
-    const validAdminKey =
-      (!!env.ADMIN_KEY && key===String(env.ADMIN_KEY).trim()) ||
-      (!!env.ADMIN_KEY_2 && key===String(env.ADMIN_KEY_2).trim());
-
-    if(!validAdminKey){
+    const key=request.headers.get("x-admin-key");
+    if(!env.ADMIN_KEY || !key || key!==env.ADMIN_KEY){
       return json({error:"Invalid Admin Key."},401);
     }
     await ensureCoreTables(env);
@@ -615,48 +539,13 @@ async function api(request,env,url){
     if(!name) return json({error:"Item name required"},400);
     const id=String(b.id||("MENU-"+token().slice(0,12)));
     const available=b.available===undefined?true:!!b.available;
-    const price = b.price===undefined ? 0 : Number(b.price);
-    if(!Number.isFinite(price)||price<0) return json({error:"Price must be a valid non-negative number."},400);
-    const discount = b.discount_percent===undefined ? 0 : Number(b.discount_percent);
-    if(!Number.isFinite(discount) || discount<0 || discount>100){
-      return json({error:"Discount must be between 0 and 100 percent."},400);
-    }
     await env.DB.prepare(`
-      INSERT INTO menu_items(id,name,category,available,price,discount_percent,updated_at)
-      VALUES(?,?,?,?,?,?,?)
+      INSERT INTO menu_items(id,name,category,available,updated_at)
+      VALUES(?,?,?,?,?)
       ON CONFLICT(name) DO UPDATE SET
-        category=excluded.category,
-        available=excluded.available,
-        price=excluded.price,
-        discount_percent=excluded.discount_percent,
-        updated_at=excluded.updated_at
-    `).bind(id,name,category,available?1:0,price,discount,new Date().toISOString()).run();
+        category=excluded.category,available=excluded.available,updated_at=excluded.updated_at
+    `).bind(id,name,category,available?1:0,new Date().toISOString()).run();
     return json({ok:true,items:await publicMenu(env)});
-  }
-
-  // Admin bulk offer: apply one discount percentage to one or many categories.
-  // This is explicit admin-only; no offer is created automatically.
-  if(url.pathname==="/api/admin/menu/offer" && request.method==="PUT"){
-    if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
-    await ensureCoreTables(env);
-    let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
-    let categories=[];
-    if(Array.isArray(b.categories)) categories=b.categories.map(x=>String(x||"").trim()).filter(Boolean);
-    else if(b.category) categories=[String(b.category).trim()].filter(Boolean);
-    categories=[...new Set(categories)];
-    if(!categories.length) return json({error:"At least one category is required."},400);
-    const discount=Number(b.discount_percent);
-    if(!Number.isFinite(discount)||discount<0||discount>100){
-      return json({error:"Discount must be between 0 and 100 percent."},400);
-    }
-    const now=new Date().toISOString();
-    for(const category of categories){
-      await env.DB.prepare(`
-        UPDATE menu_items SET discount_percent=?,updated_at=?
-        WHERE lower(category)=lower(?)
-      `).bind(discount,now,category).run();
-    }
-    return json({ok:true,categories,discount_percent:discount,items:await publicMenu(env)});
   }
 
   // Admin category availability: turn an entire category ON/OFF at once.
@@ -703,20 +592,6 @@ async function api(request,env,url){
     if(b.category!==undefined){
       await env.DB.prepare(`UPDATE menu_items SET category=?,updated_at=? WHERE id=?`)
         .bind(String(b.category||""),new Date().toISOString(),id).run();
-    }
-    if(b.price!==undefined){
-      const price=Number(b.price);
-      if(!Number.isFinite(price)||price<0) return json({error:"Price must be a valid non-negative number."},400);
-      await env.DB.prepare(`UPDATE menu_items SET price=?,updated_at=? WHERE id=?`)
-        .bind(price,new Date().toISOString(),id).run();
-    }
-    if(b.discount_percent!==undefined){
-      const discount=Number(b.discount_percent);
-      if(!Number.isFinite(discount)||discount<0||discount>100){
-        return json({error:"Discount must be between 0 and 100 percent."},400);
-      }
-      await env.DB.prepare(`UPDATE menu_items SET discount_percent=?,updated_at=? WHERE id=?`)
-        .bind(discount,new Date().toISOString(),id).run();
     }
     return json({ok:true,items:await publicMenu(env)});
   }
@@ -814,8 +689,8 @@ async function api(request,env,url){
     return json({ok:true,service:"Classic Cafe Orders"});
   }
 
-  // Public website settings. Only non-sensitive shop controls are exposed.
-  // Admin authentication is NOT required for this read-only endpoint.
+  // Public settings for the customer website.
+  // Only non-sensitive shop configuration is exposed; admin authentication is NOT required.
   if(url.pathname==="/api/public-settings" && request.method==="GET"){
     const s=await getSettings(env);
     return json({ok:true,settings:{
@@ -889,31 +764,23 @@ async function api(request,env,url){
     if(!await authorized(request,env,"admin")) return json({error:"Unauthorized"},401);
     await ensureDeliveryTables(env);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
-    const name=String(b.name||"").trim(), mobile=String(b.mobile||"").trim();
-    let accessKey=String(b.access_key||"").trim();
-    if(!name) return json({error:"Delivery Boy name is required."},400);
+    const name=String(b.name||"").trim(), mobile=String(b.mobile||"").trim(), accessKey=String(b.access_key||"").trim();
+    if(!name||!accessKey) return json({error:"Name and Delivery Key are required."},400);
     if(mobile&&!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
-    if(mobile){
-      const sameMobile=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE mobile=? LIMIT 1`).bind(mobile).first();
-      if(sameMobile) return json({error:"This mobile number is already registered as a Delivery Boy."},409);
-    }
-    if(!accessKey) accessKey="DB-"+crypto.randomUUID().replaceAll("-","").slice(0,18);
     const ex=await env.DB.prepare(`SELECT id FROM delivery_boys WHERE access_key=?`).bind(accessKey).first();
-    if(ex) return json({error:"This Delivery Key is already in use. Please try again."},409);
-    const rows=await env.DB.prepare(`SELECT id FROM delivery_boys`).all();
-    let n=0;
-    for(const r of (rows.results||[])){ const m=String(r.id||"").match(/^DB(\d+)$/); if(m) n=Math.max(n,Number(m[1])); }
-    const id="DB"+String(n+1).padStart(3,"0");
-    const now=new Date().toISOString();
+    if(ex) return json({error:"This Delivery Key is already in use."},409);
+    const rows=await env.DB.prepare(`SELECT id FROM delivery_boys ORDER BY id DESC`).all();
+    let n=1;
+    if(rows.results.length){
+      const last=Number(String(rows.results[0].id).replace("DB",""));
+      if(Number.isFinite(last)) n=last+1;
+    }
+    const id="DB"+String(n).padStart(3,"0");
     await env.DB.prepare(`
-      INSERT INTO delivery_boys(
-        id,name,mobile,access_key,active,created_at,phone,delivery_key,active_at
-      )
-      VALUES(?,?,?,?,?,?,?,?,?)
-    `).bind(
-      id,name,mobile,accessKey,1,now,mobile,accessKey,1
-    ).run();
-    return json({ok:true,delivery_boy:{id,name,mobile,active:1,access_key:accessKey}});
+      INSERT INTO delivery_boys(id,name,mobile,access_key,active,created_at)
+      VALUES(?,?,?,?,?,?)
+    `).bind(id,name,mobile,accessKey,1,new Date().toISOString()).run();
+    return json({ok:true,delivery_boy:{id,name,mobile,active:1}});
   }
 
   const boyMatch=url.pathname.match(/^\/api\/delivery\/boys\/([^/]+)$/);
@@ -922,15 +789,11 @@ async function api(request,env,url){
     await ensureDeliveryTables(env);
     const id=decodeURIComponent(boyMatch[1]);
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
-    if(b.active!==undefined){
-      const active=b.active?1:0;
-      await env.DB.prepare(`UPDATE delivery_boys SET active=? WHERE id=?`).bind(active,id).run();
-      await env.DB.prepare(`UPDATE delivery_boys SET active_at=? WHERE id=?`).bind(active,id).run();
-    }
+    if(b.active!==undefined) await env.DB.prepare(`UPDATE delivery_boys SET active=? WHERE id=?`).bind(b.active?1:0,id).run();
     if(b.mobile!==undefined){
       const mobile=String(b.mobile||"").trim();
       if(mobile&&!/^[0-9]{10}$/.test(mobile)) return json({error:"Mobile must be a valid 10 digit number."},400);
-      await env.DB.prepare(`UPDATE delivery_boys SET mobile=?,phone=? WHERE id=?`).bind(mobile,mobile,id).run();
+      await env.DB.prepare(`UPDATE delivery_boys SET mobile=? WHERE id=?`).bind(mobile,id).run();
     }
     if(b.name!==undefined){
       const name=String(b.name||"").trim();
@@ -968,8 +831,6 @@ async function api(request,env,url){
 
     let b; try{b=await request.json()}catch{return json({error:"Invalid JSON"},400);}
     const {customer_name,mobile,address,lat,lng,items}=b;
-    const payment_method=String(b.payment_method||"COD").toUpperCase();
-    if(!["COD","UPI"].includes(payment_method)) return json({error:"Invalid payment method."},400);
 
     if(!customer_name||!/^[0-9]{10}$/.test(String(mobile))||!address||
        typeof lat!=="number"||typeof lng!=="number"||!Array.isArray(items)||!items.length){
@@ -984,43 +845,12 @@ async function api(request,env,url){
     if(!availability.ok) return json({error:`${availability.item} is currently not available.`,item:availability.item},409);
 
     const delivery=Math.max(20,Math.ceil(d)*(Number(s.delivery_rate)||DEFAULT_RATE));
-    let food=0, discount_total=0;
-    const pricedItems=[];
-
+    let food=0;
     for(const x of items){
-      const name=String(x.name||"").trim();
       const p=Number(x.price),q=Number(x.qty);
-      if(!name||!Number.isFinite(p)||p<0||!Number.isInteger(q)||q<1||q>50){
-        return json({error:"Invalid item"},400);
-      }
-
-      const menuRow=await env.DB.prepare(`
-        SELECT price,discount_percent FROM menu_items
-        WHERE lower(name)=lower(?) LIMIT 1
-      `).bind(name).first();
-
-      // Keep backward compatibility: if an old item is not registered in menu_items,
-      // use the price supplied by the existing website and apply no discount.
-      const basePrice = menuRow && Number(menuRow.price)>0 ? Number(menuRow.price) : p;
-      const pct = menuRow ? Math.min(100,Math.max(0,Number(menuRow.discount_percent)||0)) : 0;
-      const lineBase = basePrice*q;
-      const lineDiscount = lineBase*pct/100;
-      const lineFinal = lineBase-lineDiscount;
-
-      food += lineFinal;
-      discount_total += lineDiscount;
-      pricedItems.push({
-        ...x,
-        name,
-        original_price:basePrice,
-        discount_percent:pct,
-        discount_amount:Number(lineDiscount.toFixed(2)),
-        final_price:Number((basePrice*(1-pct/100)).toFixed(2))
-      });
+      if(!x.name||!Number.isFinite(p)||p<0||!Number.isInteger(q)||q<1||q>50) return json({error:"Invalid item"},400);
+      food+=p*q;
     }
-
-    food=Number(food.toFixed(2));
-    discount_total=Number(discount_total.toFixed(2));
 
     const id="CC"+Date.now().toString().slice(-8), tracking_token=token(), now=new Date().toISOString();
     await env.DB.prepare(`
@@ -1029,59 +859,13 @@ async function api(request,env,url){
         delivery_charge,food_total,grand_total,payment_method,payment_status,status,items_json
       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(id,now,customer_name,String(mobile),address,lat,lng,Number(d.toFixed(3)),
-      delivery,food,food+delivery,payment_method,"UNPAID","NEW",JSON.stringify(pricedItems)).run();
+      delivery,food,food+delivery,"COD_OR_UPI_TO_DELIVERY_BOY","UNPAID","NEW",JSON.stringify(items)).run();
 
     await env.DB.prepare(`INSERT INTO order_tracking(order_id,tracking_token) VALUES(?,?)`).bind(id,tracking_token).run();
     const assignment=await autoAssignOrder(env,id,lat,lng);
 
-    // Automatic WhatsApp notification to Admin.
-    // Required Worker secrets: WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ADMIN_TO.
-    // Optional approved template mode: WHATSAPP_TEMPLATE_NAME + WHATSAPP_TEMPLATE_LANG.
-    let whatsapp_admin_sent=false;
-    try{
-      const to=String(env.WHATSAPP_ADMIN_TO||"").replace(/\D/g,"");
-      const tokenValue=String(env.WHATSAPP_TOKEN||"");
-      const phoneId=String(env.WHATSAPP_PHONE_NUMBER_ID||"");
-      const apiVersion=String(env.WHATSAPP_API_VERSION||"v22.0");
-      if(to&&tokenValue&&phoneId){
-        const lines=pricedItems.map(x=>{
-          const line=(x.final_price*x.qty).toFixed(2);
-          const discount=Number(x.discount_percent||0);
-          return `${x.name} × ${x.qty} = ₹${line}${discount?` (Offer ${discount}% OFF)`:""}`;
-        }).join("\n");
-        const trackingUrl=`${new URL(request.url).origin}/track?token=${encodeURIComponent(tracking_token)}`;
-        const text=`🚨 *CLASSIC CAFE - NEW ORDER* 🚨\n\n*Order ID:* ${id}\n*Time:* ${new Date(now).toLocaleString("en-IN",{timeZone:"Asia/Kolkata"})}\n\n*Customer Details*\n👤 Name: ${customer_name}\n📱 Mobile: ${mobile}\n📍 Address: ${address}\n📏 Distance: ${Number(d.toFixed(2))} KM\n\n*Order Details*\n${lines}\n\n💰 Food Total: ₹${food}\n🛵 Delivery: ₹${delivery}\n💵 Grand Total: ₹${food+delivery}\n💳 Payment: ${payment_method}\n📦 Status: NEW\n\n*Track Order:* ${trackingUrl}`;
-        const templateName=String(env.WHATSAPP_TEMPLATE_NAME||"").trim();
-        const templateLang=String(env.WHATSAPP_TEMPLATE_LANG||"en_US").trim();
-        let payload;
-        if(templateName){
-          payload={messaging_product:"whatsapp",to,type:"template",template:{name:templateName,language:{code:templateLang},components:[{type:"body",parameters:[
-            {type:"text",text:String(id)},
-            {type:"text",text:String(customer_name)},
-            {type:"text",text:String(mobile)},
-            {type:"text",text:String(address)},
-            {type:"text",text:String(lines)},
-            {type:"text",text:`₹${food+delivery}`},
-            {type:"text",text:String(payment_method)},
-            {type:"text",text:String(trackingUrl)}
-          ]}]}};
-        }else{
-          payload={messaging_product:"whatsapp",to,type:"text",text:{body:text}};
-        }
-        const waRes=await fetch(`https://graph.facebook.com/${apiVersion}/${phoneId}/messages`,{method:"POST",headers:{"content-type":"application/json","authorization":`Bearer ${tokenValue}`},body:JSON.stringify(payload)});
-        if(waRes.ok){
-          whatsapp_admin_sent=true;
-        }else{
-          console.error("WhatsApp Admin Notification Failed",waRes.status,await waRes.text());
-        }
-      }
-    }catch(e){
-      console.error("WhatsApp Admin Notification Error",String(e?.message||e));
-    }
-
     return json({ok:true,order_id:id,tracking_token,distance_km:Number(d.toFixed(2)),
-      delivery_charge:delivery,food_total:food,discount_total:discount_total,
-      grand_total:food+delivery,status:"NEW",payment_method,items:pricedItems,assignment,whatsapp_admin_sent});
+      delivery_charge:delivery,food_total:food,grand_total:food+delivery,status:"NEW",assignment});
   }
 
   // Get orders
@@ -1096,21 +880,12 @@ async function api(request,env,url){
     if(deliveryAllowed&&!adminAllowed){
       const boyId=await getDeliveryBoyId(request,env);
       if(!boyId) return json({error:"Delivery Boy not found"},401);
-      if(url.searchParams.get("history")==="1") {
-        rows=await env.DB.prepare(`
-          SELECT o.*,da.delivery_boy_id FROM orders o
-          JOIN delivery_assignments da ON da.order_id=o.id
-          WHERE da.delivery_boy_id=?
-          ORDER BY o.created_at DESC LIMIT ?
-        `).bind(boyId,limit).all();
-      } else {
-        rows=await env.DB.prepare(`
-          SELECT o.*,da.delivery_boy_id FROM orders o
-          JOIN delivery_assignments da ON da.order_id=o.id
-          WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
-          ORDER BY o.created_at ASC LIMIT ?
-        `).bind(boyId,limit).all();
-      }
+      rows=await env.DB.prepare(`
+        SELECT o.*,da.delivery_boy_id FROM orders o
+        JOIN delivery_assignments da ON da.order_id=o.id
+        WHERE da.delivery_boy_id=? AND o.status NOT IN('DELIVERED','CANCELLED')
+        ORDER BY o.created_at ASC LIMIT ?
+      `).bind(boyId,limit).all();
     }else{
       rows=await env.DB.prepare(`
         SELECT o.*,da.delivery_boy_id FROM orders o
@@ -1123,20 +898,6 @@ async function api(request,env,url){
       let items=[]; try{items=JSON.parse(r.items_json||"[]")}catch{}
       return {...r,items};
     })});
-  }
-
-  // Customer My Orders: fetch a known tracking token.
-  const mt=url.pathname.match(/^\/api\/my-orders\/([^/]+)$/);
-  if(mt&&request.method==="GET"){
-    const row=await env.DB.prepare(`
-      SELECT o.id,o.created_at,o.customer_name,o.mobile,o.address,o.status,o.food_total,o.delivery_charge,
-             o.grand_total,o.payment_method,o.payment_status,o.items_json,t.lat,t.lng,t.updated_at,t.tracking_token
-      FROM orders o JOIN order_tracking t ON t.order_id=o.id
-      WHERE t.tracking_token=?
-    `).bind(mt[1]).first();
-    if(!row) return json({error:"Order not found."},404);
-    let items=[]; try{items=JSON.parse(row.items_json||"[]")}catch{}
-    return json({ok:true,order:{...row,items}});
   }
 
   // Track
